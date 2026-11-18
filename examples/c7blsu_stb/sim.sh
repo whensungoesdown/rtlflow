@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 # Simulate c7blsu_stb with the animation scenario in ModelSim and write
 # stb.vcd (all signals of the DUT, plus the clock) next to this script.
 #

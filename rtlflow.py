@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 """rtlflow: show a synchronous Verilog module as a top-to-bottom block diagram
 and step through a simulation of it, cycle by cycle, in a web page.
 

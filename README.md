@@ -20,6 +20,21 @@ The values come from a **VCD** file written by any simulator (or a simple
 text trace), sampled once per clock cycle. The output is a single HTML file
 with no external dependencies: open it in a browser, or send it to someone.
 
+## Example
+
+[![c7blsu_stb in rtlflow, cycle 16](docs/c7blsu_stb.png)](examples/c7blsu_stb/c7blsu_stb.html)
+
+**[Open the example page](examples/c7blsu_stb/c7blsu_stb.html)**: the CPU7B store
+buffer (`c7blsu_stb`), 41 cycles of a ModelSim run with seven stores and four
+loads. The picture shows cycle 16, step 2: the STB is full (`v_q = 1111`) and
+the BIU accepts the write of entry 0 to `0x2000`, a store that fails later.
+The page is one self-contained HTML file (88 kB). On a GitHub file view it
+shows as source, so download it (*Raw*, then save) and open it in a browser,
+or use the GitHub Pages link of the repository if it has one.
+
+Try **Next ›** / the arrow keys, click a block, or select `err_q` and use
+**find value** `1` to jump to cycle 19, where the store-buffer error is set.
+
 ## Requirements
 
 - Python 3.
@@ -321,3 +336,19 @@ cyc=1 lsu_stb_push_ls2=0 v_q=1 iss_q=0
 | `tests/focus_test.py` | Focus on a block, next change, show all, go to a cycle |
 | `tests/search_test.py` | The value search: find forward/backward, the query parser |
 | `tests/pic_trace.txt` | A small text trace for `pic.v`, to test `--trace` |
+| `tests/screenshot.py` | Screenshot of a page at a given step (`docs/c7blsu_stb.png`) |
+| `docs/c7blsu_stb.png` | The picture in this README |
+
+## License
+
+Copyright (C) 2026 whensungoesdown
+
+rtlflow is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+A generated page contains the viewer code from `viewer.html`, which is under
+the GPL; the design data embedded in it (signal names, values) stays yours.

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 # c7blsu and c7blsu_stb from a VCD of the whole CPU (test109_stb_write_error).
 #
 # 1. In WSL, simulate test109 (it logs every signal to result.wlf) and convert

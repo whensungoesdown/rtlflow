@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 """Check Focus and "next change" on a generated page.
 
   python tests/focus_test.py PAGE.html BLOCK OUTPREFIX

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 """Check the value search of the side panel.
 
   python tests/search_test.py PAGE.html BLOCK QUERY [QUERY ...]

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 whensungoesdown <whensungoes@gmail.com>
 """Smoke test of a generated rtlflow page in a real browser (Edge or Chrome via Playwright).
 
   python tests/browser_test.py PAGE.html OUTPREFIX
