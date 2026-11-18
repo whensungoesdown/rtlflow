@@ -41,6 +41,9 @@ python rtlflow.py FILES.v ... --top MODULE [--vcd SIM.vcd] [-o OUT.html]
 | `--top MODULE` | the module to draw; submodules are flattened into it |
 | `-I DIR`, `-D NAME[=VAL]` | include directories and defines for Yosys |
 | `--sv` | read all files as SystemVerilog (`.sv` files always are) |
+| `--param NAME=VAL` | set a parameter of the top module, as `-GNAME=VAL` in the simulation (repeatable) |
+| `--lib FILE` | read FILE for its ports only: each instance of its modules is one block (repeatable) |
+| `--blackbox MODULE` | keep each instance of MODULE as one block instead of flattening it (repeatable) |
 | `--vcd FILE` | the simulation dump |
 | `--scope tb.dut` | the DUT instance in the VCD; found automatically if omitted |
 | `--clock NAME` | the clock; found from the flip-flops if omitted |
@@ -48,6 +51,7 @@ python rtlflow.py FILES.v ... --top MODULE [--vcd SIM.vcd] [-o OUT.html]
 | `--cycles A:B` | keep cycles A..B-1 only (Python slice: `100:`, `:50`) |
 | `--trace FILE` | a text trace instead of a VCD, see below |
 | `--hide REGEX` | hide signals whose name matches (repeatable) |
+| `--only REGEX` | show only the signals whose name matches, hide the rest (repeatable) |
 | `--layout FILE.json` | block positions saved from the page |
 | `--title TEXT` | page title |
 
@@ -64,6 +68,58 @@ wrote examples/c7blsu_stb/c7blsu_stb.html (81 kB)
 
 "no values for" lists the visible blocks that are not in the VCD. Dump all
 signals of the DUT, including the internal ones.
+
+## A module inside a bigger simulation
+
+The VCD does not have to come from a testbench of the module. A dump of the
+whole CPU works as well: rtlflow looks for the scope (instance) whose
+signals match the module best, and reads only those signals. Use `--scope`
+when the module is instantiated more than once.
+
+`examples/c7blsu_cpu/run.sh` does this with test109 (the STB write error
+test) of cpu7b:
+
+```bash
+# in WSL: simulate the whole CPU, it logs every signal to result.wlf
+cd /mnt/d/work/soc2/rtl/cpu7b/simulation/test109_stb_write_error
+bash simulate.sh
+wlf2vcd result.wlf -o /mnt/d/work/rtlflow/examples/c7blsu_cpu/test109.vcd
+
+# then
+bash examples/c7blsu_cpu/run.sh
+```
+
+```
+c7blsu: 57 input, 49 output, 78 comb, 43 reg, 1 inst, 475 edges; hidden: clk, resetn
+2535 cycles from scope top_tb.u_top.u_c7b.u_core.u_exu.u_lsu; no values for: -
+c7blsu_stb: 14 input, 14 output, 11 reg, 27 comb, 112 edges; hidden: clk, resetn
+2535 cycles from scope top_tb.u_top.u_c7b.u_core.u_exu.u_lsu.u_stb; no values for: -
+```
+
+Things to get right:
+
+- **Parameters.** Build the diagram with the values the simulation used.
+  test109 runs with `-GSTB_BUFFER=1`, so `run.sh` passes `--param
+  STB_BUFFER=1`. With a different value Yosys removes the logic that is
+  constant for that value.
+- **Submodules.** All files of the module's hierarchy are needed. A
+  submodule you don't want to see inside the diagram can be one block:
+  `--lib c7btlb.v` reads the DTLB for its ports only, so `u_dtlb` is one
+  block (blue) between its inputs and its outputs. `--blackbox MODULE` does
+  the same for a module whose file is read normally.
+- **What is shown of the flattened submodules.** Inside `c7blsu`, the STB
+  (`u_stb`) is flattened: its register outputs are blocks (`u_stb.v_q`,
+  `u_stb.err_q`, ...), and its logic (`pop`, `issue_start`, ...) is folded
+  into the wires. To see the STB's logic, make a page for `c7blsu_stb`
+  itself from the same VCD (the second command in `run.sh`).
+- **ModelSim WLF.** `wlf2vcd` (part of ModelSim) converts a WLF file. The
+  WLF has the signals that were logged (`add wave -recursive *` or
+  `log -r /*`). test109's VCD is 38 MB and is read in about 3 s.
+- **Many cycles.** All cycles go into the page (2535 cycles of the LSU make
+  a 3.6 MB page). Use `--cycles A:B` to keep a window.
+
+A whole LSU is about 230 blocks, which is too many to read at once. Use
+**Focus** (below) or `--only`.
 
 ## The example: c7blsu_stb
 
@@ -135,6 +191,16 @@ step.
 - **Hide this block** removes the block. The wires through it are connected
   directly, from its sources to its destinations. This is how you simplify
   the diagram, e.g. to fold `paddr_sh` into `paddr_in`.
+- **Focus** shows only the selected block, the blocks up to N levels before
+  it (where its value comes from) and the blocks up to N levels after it
+  (what it drives). The blocks in between that are hidden are bridged, so the
+  wires still show the dependencies. The diagram is arranged again. **show
+  all** in the `hidden` menu goes back to the full diagram. For example, focus
+  on `u_stb.err_q` in the LSU page, 2 levels, to see the STB error path.
+- **prev change / next change** jump to the previous / next cycle in which
+  the selected signal changes value. With 2535 cycles this is how you find
+  the cycles that matter (in test109: `u_stb.err_q` is set at cycle 53).
+- The box after the cycle number jumps to a cycle (type it, Enter).
 
 Clocks and resets are hidden from the start. Their names match
 `(rst|reset)(_n|_l|n|...)`; add more with `--hide`.
@@ -215,13 +281,11 @@ cyc=1 lsu_stb_push_ls2=0 v_q=1 iss_q=0
 
 - **One clock domain.** Multi-clock designs are drawn, but they are sampled
   on one clock.
-- **The whole design is flattened.** Instances do not appear as blocks;
-  their named signals appear inside the top module only when they are
-  register outputs.
+- **Submodules are flattened**, unless they are given with `--lib` or
+  `--blackbox`. A flattened submodule shows its register outputs; its logic
+  is folded into the wires.
 - **Big modules.** With more than about 100 blocks the automatic layout is
-  dense. Hide the less interesting signals and arrange the rest; the
-  `c7bbiu_axi_interface` port list (78 ports) is about the practical limit
-  without that.
+  dense. Use Focus, `--only` or Hide, and arrange the rest.
 - **Memories** (`reg [..] mem [..]`) have not been tried yet.
 - **No in-browser simulation yet.** The values must come from a
   simulation.
@@ -233,5 +297,7 @@ cyc=1 lsu_stb_push_ls2=0 v_q=1 iss_q=0
 | `rtlflow.py` | Command line: Yosys → signal graph, VCD/trace → values per cycle, writes the page |
 | `viewer.html` | The page template: layout, routing, drawing, playback, editing (plain JavaScript) |
 | `examples/c7blsu_stb/` | `tb_stb_anim.v`, `sim.sh`, `stb.vcd` and the generated `c7blsu_stb.html` |
+| `examples/c7blsu_cpu/` | `run.sh`, `test109.vcd` (whole CPU) and the generated `c7blsu.html`, `c7blsu_stb.html` |
 | `tests/browser_test.py` | Opens a page in Edge/Chrome, steps, drags, hides, reloads, saves a layout, reports JavaScript errors |
+| `tests/focus_test.py` | Focus on a block, next change, show all, go to a cycle |
 | `tests/pic_trace.txt` | A small text trace for `pic.v`, to test `--trace` |

@@ -9,6 +9,7 @@ body { display: flex; flex-direction: column; }
 #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 14px;
        background: #f7f7f7; border-bottom: 1px solid #ccc; }
 button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
+#hid { max-width: 150px; } #lit { max-width: 160px; }
 .sep { width: 1px; height: 24px; background: #ccc; margin: 0 4px; }
 #pos { font-weight: bold; min-width: 130px; }
 #steps span { padding: 3px 8px; border: 1px solid #bbb; border-radius: 3px; margin-right: 3px; cursor: pointer;
@@ -41,7 +42,7 @@ svg text { pointer-events: none; }
   <button id="play" title="Space">Play</button>
   <button id="next" title="Right">Next &rsaquo;</button>
   <button id="ncyc" title="Down / PageDown">cycle &raquo;</button>
-  <span id="pos"></span><span id="steps"></span>
+  <span id="pos"></span><input id="cyc" type="number" min="0" title="go to cycle (Enter)" style="width:70px;font-size:14px"><span id="steps"></span>
   <input id="slider" type="range" min="0" value="0">
   <span class="sep"></span>
   <button id="zout" title="zoom out">&minus;</button><button id="zfit" title="fit the width">Fit</button><button id="zin" title="zoom in">+</button>
@@ -71,11 +72,11 @@ window.onerror = (m, s, l) => { document.getElementById('err').textContent += 'e
 
 // ------------------------------------------------------------------ style
 const LABEL_W = 130, MARGIN = 24, GAP = 52, PAD = 8, GSEP = 8, LANE = 10, PADB = 14, MINB = 34, MAXW = 2200;
-const HGT = { input: 44, comb: 44, output: 44, reg: 72 };
+const HGT = { input: 44, comb: 44, output: 44, reg: 72, inst: 50 };
 const BANDS = { Inputs: '#fff6dd', Registers: '#e9f1fb', Logic: '#e1f6ea', Outputs: '#eee6f8' };
-const BAND_OF = { input: 'Inputs', reg: 'Registers', comb: 'Logic', output: 'Outputs' };
+const BAND_OF = { input: 'Inputs', reg: 'Registers', comb: 'Logic', inst: 'Logic', output: 'Outputs' };
 const COL = { input: ['#ffe6cc', '#d79b00'], reg: ['#f8cecc', '#b85450'], comb: ['#d5e8d4', '#82b366'],
-              output: ['#e1d5e7', '#9673a6'] };
+              output: ['#e1d5e7', '#9673a6'], inst: ['#dae8fc', '#6c8ebf'] };
 const IDLE = ['#f5f5f5', '#b3b3b3'], FLOW = '#9a9aff', BACK = '#3cb4a4', WIRE = '#b5b5b5', CLKC = '#ff9900';
 const INK = '#222', OFF = '#9a9a9a';
 const F_LBL = '14px Arial', F_VAL = '12px Consolas, monospace';
@@ -90,6 +91,7 @@ function val(id, c) { const v = D.values[id]; return v && c >= 0 && c < NC ? v[c
 function active(h) { return h != null && /[1-9a-f]/.test(h); }
 let LIT = 'nz';
 function lit(id, c) {           // is the signal drawn as active in cycle c
+  if (NODE[id].kind === 'inst') return (G.fout[id] || []).some(x => NODE[x].kind !== 'inst' && lit(x, c));
   const h = val(id, c);
   if (LIT === 'chg') return h != null && c > 0 && h !== val(id, c - 1);
   if (LIT === 'bit' && NODE[id].width > 1) return false;
@@ -115,7 +117,7 @@ const cv = document.createElement('canvas').getContext('2d');
 function tw(s, f) { cv.font = f; return cv.measureText(s).width; }
 const NW = {};
 D.nodes.forEach(n => {
-  let len = fmt('0'.repeat(Math.ceil(n.width / 4)), n.width).length;
+  let len = n.kind === 'inst' ? n.module.length : fmt('0'.repeat(Math.ceil(n.width / 4)), n.width).length;
   (D.values[n.id] || []).forEach(h => { len = Math.max(len, fmt(h, n.width).length); });
   const w = Math.max(tw(n.id, F_LBL), len * tw('0', F_VAL));
   NW[n.id] = Math.round(Math.min(260, Math.max(80, w + 26)));
@@ -123,6 +125,7 @@ D.nodes.forEach(n => {
 
 // ------------------------------------------------------------------ graph
 let hidden = new Set(D.hidden), G, L, GEO;
+const DEF_HIDDEN = new Set(D.base_hidden || D.hidden);
 
 function buildGraph() {
   function effIn(id, stack, out) {          // fanin through hidden blocks
@@ -181,13 +184,13 @@ function autoLayout() {
     if (st.has(id)) return 0;
     st.add(id);
     let l = 0;
-    for (const f of fin[id]) if (NODE[f].kind === 'comb') l = Math.max(l, cl(f, st) + 1);
+    for (const f of fin[id]) if (NODE[f].kind === 'comb' || NODE[f].kind === 'inst') l = Math.max(l, cl(f, st) + 1);
     st.delete(id);
     return (lvl[id] = l);
   }
   const by = k => nodes.filter(n => n.kind === k).map(n => n.id);
   const groups = [];
-  const ins = by('input'), regs = by('reg'), combs = by('comb'), outs = by('output');
+  const ins = by('input'), regs = by('reg'), combs = by('comb').concat(by('inst')), outs = by('output');
   if (ins.length) groups.push({ band: 'Inputs', ids: ins });
   if (regs.length) groups.push({ band: 'Registers', ids: regs });
   if (combs.length) {
@@ -478,6 +481,10 @@ function render() {
       u.q = el('rect', { x: x0 + 6, y: b.y0 + 44, width: b.w - 12, height: 22, stroke: COL.reg[1], 'stroke-width': 0.8 }, g);
       u.v = T(b.x + ox, b.y0 + 55.5, '', 'bold 12px Consolas, monospace');
       el('polygon', { points: `${x0},${b.y1 - 16} ${x0 + 9},${b.y1 - 10} ${x0},${b.y1 - 4}`, fill: '#fff', stroke: COL.reg[1] }, g);
+    } else if (n.kind === 'inst') {
+      el('rect', { x: x0 + 4, y: b.y0 + 4, width: b.w - 8, height: b.h - 8, fill: 'none', stroke: COL.inst[1], 'stroke-width': 0.8 }, g);
+      u.lbl = T(b.x + ox, b.y0 + 19, n.id, 'bold ' + F_LBL);
+      u.v = T(b.x + ox, b.y0 + 35, n.module, 'italic 12px Arial');
     } else {
       u.lbl = T(b.x + ox, b.y0 + 15, n.id, F_LBL);
       u.v = T(b.x + ox, b.y0 + 32, '', F_VAL);
@@ -519,10 +526,10 @@ function update(animate) {
       const [f, st] = lit ? COL[n.kind] : IDLE;
       u.box.setAttribute('fill', f); u.box.setAttribute('stroke', st);
       u.lbl.setAttribute('fill', lit ? INK : OFF);
-      u.v.textContent = fmt(h, n.width); u.v.setAttribute('fill', lit ? INK : OFF);
+      u.v.textContent = n.kind === 'inst' ? n.module : fmt(h, n.width); u.v.setAttribute('fill', lit ? INK : OFF);
     }
     u.selr.setAttribute('display', sel === id ? '' : 'none');
-    u.tip.textContent = `${id}  [${n.kind}, ${n.width} bit${n.width > 1 ? 's' : ''}]\n${full(h, n.width)}`;
+    u.tip.textContent = n.kind === 'inst' ? `${id}: instance of ${n.module}` : `${id}  [${n.kind}, ${n.width} bit${n.width > 1 ? 's' : ''}]\n${full(h, n.width)}`;
   }
   for (const r of ui.edges) {
     const e = r.e;
@@ -598,13 +605,25 @@ function info() {
   if (!sel || !NODE[sel]) { el.innerHTML = '<span class="muted">No block selected.</span>'; return; }
   const n = NODE[sel], c = cur.c;
   const lk = ids => ids.length ? ids.map(f => `<a data-id="${f}">${f}</a>`).join(', ') : '<span class="muted">-</span>';
-  let h = `<h3>${n.id}</h3><span class="muted">${n.kind}, ${n.width} bit${n.width > 1 ? 's' : ''}${n.src ? '<br>' + n.src.split('|')[0].replace(/^.*[\\/]/, '') : ''}</span>`;
-  h += `<p>value: <span class="mono">${full(val(sel, c), n.width)}</span>`;
+  let h = `<h3>${n.id}</h3><span class="muted">${n.kind === 'inst' ? 'instance of ' + n.module : n.kind + ', ' + n.width + ' bit' + (n.width > 1 ? 's' : '')}${n.src ? '<br>' + n.src.split('|')[0].replace(/^.*[\\/]/, '') : ''}</span>`;
+  if (n.kind !== 'inst') h += `<p>value: <span class="mono">${full(val(sel, c), n.width)}</span>`;
+  else h += '<p>';
   if (n.kind === 'reg' && c + 1 < NC) h += `<br>next: <span class="mono">${full(val(sel, c + 1), n.width)}</span>`;
   h += `</p><p>from: ${lk(G.fin[sel] || [])}<br>to: ${lk(G.fout[sel] || [])}</p>`;
-  h += `<button id="hidebtn">Hide this block</button>`;
+  if (n.kind !== 'inst' && NC) h += `<p><button id="pchg">&lsaquo; prev change</button> <button id="nchg">next change &rsaquo;</button></p>`;
+  h += `<p><button id="hidebtn">Hide this block</button></p>`;
+  h += `<p><button id="focbtn">Focus</button> on this block, <select id="focn">${[1, 2, 3, 4, 6].map(k =>
+    `<option${k === FOCUS_N ? ' selected' : ''}>${k}</option>`).join('')}</select> levels up and down</p>`;
   el.innerHTML = h;
   document.getElementById('hidebtn').onclick = () => { hidden.add(sel); sel = null; relayout(); };
+  document.getElementById('focbtn').onclick = () => { FOCUS_N = +document.getElementById('focn').value; focus(sel, FOCUS_N); };
+  const chg = d => {
+    for (let k = c + d; k >= 0 && k < NC; k += d) if (k > 0 && val(sel, k) !== val(sel, k - 1)) return go(k * 3, false);
+  };
+  if (document.getElementById('nchg')) {
+    document.getElementById('nchg').onclick = () => chg(1);
+    document.getElementById('pchg').onclick = () => chg(-1);
+  }
 }
 document.getElementById('side').addEventListener('click', e => {
   const id = e.target.dataset && e.target.dataset.id;
@@ -671,14 +690,35 @@ function store() { try { localStorage.setItem(KEY, JSON.stringify(layoutJSON()))
 function hidSel() {
   const s = document.getElementById('hid');
   const ids = [...hidden].sort();
-  s.innerHTML = `<option value="">hidden (${ids.length})</option>` + ids.map(id => `<option value="${id}">show ${id}</option>`).join('');
+  s.innerHTML = `<option value="">hidden (${ids.length})</option><option value="*">show all</option>` + ids.map(id => `<option value="${id}">show ${id}</option>`).join('');
 }
 document.getElementById('lit').onchange = e => { LIT = e.target.value; try { localStorage.setItem('rtlflow:lit', LIT); } catch (x) { /* */ } update(false); };
 document.getElementById('hid').onchange = e => {
   const id = e.target.value;
-  if (id) { hidden.delete(id); sel = id; relayout(); }
+  if (id === '*') { hidden = new Set(D.nodes.filter(n => n.clock || DEF_HIDDEN.has(n.id)).map(n => n.id)); rearrange(); }
+  else if (id) { hidden.delete(id); sel = id; relayout(); }
 };
-document.getElementById('auto').onclick = () => { buildGraph(); autoLayout(); route(); render(); update(false); store(); fit(); };
+function rearrange() { buildGraph(); autoLayout(); route(); render(); update(false); hidSel(); store(); fit(); }
+let FOCUS_N = 2;
+function focus(id, k) {
+  // keep the block, the blocks up to k levels before it and k levels after it
+  const fo = {};
+  D.nodes.forEach(n => n.fanin.forEach(f => { (fo[f] = fo[f] || []).push(n.id); }));
+  const keep = new Set([id]);
+  for (const [next, dir] of [[x => NODE[x].fanin, 0], [x => fo[x] || [], 1]]) {
+    let front = [id];
+    for (let l = 0; l < k; l++) {
+      const nf = [];
+      for (const x of front) for (const y of next(x)) if (!keep.has(y) || y === id) { if (!keep.has(y)) nf.push(y); keep.add(y); }
+      front = nf;
+    }
+  }
+  hidden = new Set(D.nodes.filter(n => !keep.has(n.id) || n.clock || DEF_HIDDEN.has(n.id)).map(n => n.id));
+  hidden.delete(id);
+  sel = id;
+  rearrange();
+}
+document.getElementById('auto').onclick = rearrange;
 document.getElementById('save').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(layoutJSON(), null, 1)], { type: 'application/json' }));
@@ -699,6 +739,7 @@ function bar() {
   const { c, s } = cur;
   $('slider').value = c * 3 + s;
   $('pos').textContent = NC ? `cycle ${D.cycles[c].label}  (${c + 1}/${NC})` : '';
+  $('cyc').style.display = NC ? '' : 'none';
   $('steps').innerHTML = NC ? STEP_NAMES.map((n, j) => `<span class="${j === s ? 'on' : ''}" data-j="${j}">${j + 1} ${n}</span>`).join('') : '';
   if (NC) history.replaceState(null, '', '#' + c + '.' + s);
 }
@@ -713,6 +754,7 @@ function play() {
   $('play').textContent = 'Pause';
   timer = setInterval(() => { if (here() >= NSTEP - 1) play(); else go(here() + 1); }, 1300);
 }
+$('cyc').onkeydown = e => { if (e.key === 'Enter') { const k = D.cycles.findIndex(q => q.label === e.target.value.trim()); go((k >= 0 ? k : +e.target.value) * 3, false); } };
 $('first').onclick = () => go(0);
 $('prev').onclick = () => go(here() - 1);
 $('next').onclick = () => go(here() + 1);
@@ -725,7 +767,7 @@ $('zin').onclick = () => setZoom(zoom * 1.25);
 $('zout').onclick = () => setZoom(zoom / 1.25);
 $('zfit').onclick = fit;
 document.onkeydown = e => {
-  if (/INPUT|SELECT/.test(document.activeElement.tagName) && e.key !== ' ') { if (e.target.type !== 'range') return; }
+  if (/INPUT|SELECT/.test(document.activeElement.tagName) && e.target.type !== 'range') return;
   const k = { ArrowLeft: () => go(here() - 1), ArrowRight: () => go(here() + 1),
               ArrowUp: () => $('pcyc').onclick(), PageUp: () => $('pcyc').onclick(),
               ArrowDown: () => $('ncyc').onclick(), PageDown: () => $('ncyc').onclick(),

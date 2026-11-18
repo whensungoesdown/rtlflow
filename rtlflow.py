@@ -13,12 +13,17 @@ usage:
 
   -I DIR / -D NAME[=VAL]     include directories and defines for Yosys
   --sv                       read all files as SystemVerilog (.sv files always are)
+  --param NAME=VAL           set a parameter of the top module (as -GNAME=VAL in the simulation)
+  --lib FILE                 read FILE for its module ports only: each instance of it is one block
+  --blackbox MODULE          keep each instance of MODULE as one block instead of flattening it
   --vcd FILE                 simulation dump; --scope tb.dut selects the DUT
                              instance (found automatically if omitted)
   --trace FILE               text trace instead: one line per cycle, name=hex pairs
   --clock NAME               clock of the module (found from the flip-flops)
   --negedge                  sample at the falling edge instead of the rising edge
   --cycles A:B               keep cycles A..B-1 only
+  --only REGEX               show only signals whose name matches (repeatable);
+                             the others are hidden, i.e. bridged
   --hide REGEX               hide signals whose name matches (repeatable);
                              clocks and resets are hidden by default
   --layout FILE.json         block positions saved from the page ("Save layout")
@@ -47,11 +52,15 @@ RESET_RE = r'(?i)^(.*_)?(rst|reset)(_?n|_?l|_?b)?$'
 
 
 # ------------------------------------------------------------------ yosys
-def run_yosys(files, top, incdirs, defines, sv=False):
+def run_yosys(files, top, incdirs, defines, sv=False, params=(), libs=(), boxes=()):
     out = tempfile.mktemp(suffix='.json')
     opts = ' '.join(['-I' + yp(d) for d in incdirs] + ['-D' + d for d in defines])
-    rd = '; '.join('read_verilog %s %s "%s"' % ('-sv' if sv or f.endswith('.sv') else '', opts, yp(f)) for f in files)
-    script = '%s; hierarchy -check -top %s; proc; flatten; opt_clean; write_json "%s"' % (rd, top, yp(out))
+    rd = '; '.join('read_verilog %s %s %s "%s"' % ('-lib' if f in libs else '', '-sv' if sv or f.endswith('.sv') else '',
+                                                    opts, yp(f)) for f in list(libs) + list(files))
+    for b in boxes:
+        rd += '; blackbox %s' % b
+    chp = ' '.join('-chparam %s %s' % tuple(p.split('=', 1)) for p in params)
+    script = '%s; hierarchy -check -top %s %s; proc; flatten; opt_clean; write_json "%s"' % (rd, top, chp, yp(out))
     if shutil.which('yosys'):
         cmd = ['yosys', '-q', '-p', script]
     else:
@@ -161,6 +170,8 @@ def build_graph(yj, top, hide):
         if cn == '<port>':
             return set()
         c = m['cells'][cn]
+        if not c['type'].startswith('$'):
+            return {cn}                                  # a submodule kept as a block
         dirs = c.get('port_directions', {})
         s = set()
         reg = is_reg(c['type']) or c['type'] in MEM_TYPES
@@ -202,6 +213,18 @@ def build_graph(yj, top, hide):
         nodes.append(dict(id=name, kind=kind, width=len(bits), src=src, fanin=sorted(fanin),
                           clock=any(b in clock_bits for b in bits if isinstance(b, int)),
                           vcd=name if name not in synth.values() else name[:-2]))
+    for cn, c in m['cells'].items():
+        if c['type'].startswith('$'):
+            continue
+        dirs = c.get('port_directions', {})
+        fanin = set()
+        for p, bits in c['connections'].items():
+            if dirs.get(p) != 'output':
+                for b in bits:
+                    fanin |= sources(b)
+        src = c.get('attributes', {}).get('src', '')
+        nodes.append(dict(id=cn, kind='inst', module=c['type'].lstrip(chr(92)), width=0, src=src,
+                          fanin=sorted(fanin - {cn}), clock=False, vcd=None))
     keep = {n['id'] for n in nodes}
     for n in nodes:
         n['fanin'] = [f for f in n['fanin'] if f in keep]
@@ -375,6 +398,9 @@ def main():
     ap.add_argument('-I', dest='incdirs', action='append', default=[])
     ap.add_argument('-D', dest='defines', action='append', default=[])
     ap.add_argument('--sv', action='store_true')
+    ap.add_argument('--param', action='append', default=[])
+    ap.add_argument('--lib', action='append', default=[])
+    ap.add_argument('--blackbox', action='append', default=[])
     ap.add_argument('--vcd')
     ap.add_argument('--trace')
     ap.add_argument('--scope')
@@ -382,25 +408,30 @@ def main():
     ap.add_argument('--negedge', action='store_true')
     ap.add_argument('--cycles')
     ap.add_argument('--hide', action='append', default=[])
+    ap.add_argument('--only', action='append', default=[])
     ap.add_argument('--layout')
     ap.add_argument('--title')
     ap.add_argument('-o', '--out')
     a = ap.parse_args()
 
-    yj = run_yosys(a.files, a.top, a.incdirs, a.defines, a.sv)
+    yj = run_yosys(a.files, a.top, a.incdirs, a.defines, a.sv, a.param, a.lib, a.blackbox)
     if a.top not in yj['modules']:
         sys.exit('rtlflow: module %s not found' % a.top)
     nodes, hidden = build_graph(yj, a.top, a.hide)
+    base_hidden = list(hidden)
+    if a.only:
+        hidden = sorted(set(hidden) | {n['id'] for n in nodes if not any(re.search(o, n['id']) for o in a.only)})
     clocks = [n['id'] for n in nodes if n['clock'] and n['kind'] == 'input']
     clock = a.clock or (clocks[0] if clocks else None)
     kinds = {}
     for n in nodes:
         kinds[n['kind']] = kinds.get(n['kind'], 0) + 1
     print('%s: %s, %d edges; hidden: %s' % (a.top, ', '.join('%d %s' % (v, k) for k, v in kinds.items()),
-                                             sum(len(n['fanin']) for n in nodes), ', '.join(hidden) or '-'))
+                                             sum(len(n['fanin']) for n in nodes),
+                                             ', '.join(hidden) if len(hidden) < 12 else '%d blocks' % len(hidden)))
 
     cycles, values, scope = [], {}, None
-    want = {n['id']: n['vcd'] for n in nodes}
+    want = {n['id']: n['vcd'] for n in nodes if n['vcd']}
     if a.vcd:
         if not clock:
             sys.exit('rtlflow: no clock found, give --clock')
@@ -419,7 +450,7 @@ def main():
         cycles = cycles[sl]
         values = {k: v[sl] for k, v in values.items()}
     if cycles:
-        miss = [n['id'] for n in nodes if n['id'] not in values and n['id'] not in hidden]
+        miss = [n['id'] for n in nodes if n['id'] not in values and n['id'] not in hidden and n['kind'] != 'inst']
         print('%d cycles%s; no values for: %s' % (len(cycles), ' from scope ' + scope if scope else '',
                                                    ', '.join(miss) or '-'))
 
@@ -430,7 +461,7 @@ def main():
     for n in nodes:
         del n['vcd']
     data = dict(module=a.top, title=a.title or a.top, files=[os.path.basename(f) for f in a.files],
-                nodes=nodes, hidden=hidden, cycles=cycles, values=values, layout=layout,
+                nodes=nodes, hidden=hidden, base_hidden=base_hidden, cycles=cycles, values=values, layout=layout,
                 source=a.vcd and os.path.basename(a.vcd) or a.trace and os.path.basename(a.trace) or '')
     with open(os.path.join(HERE, 'viewer.html'), encoding='utf-8') as f:
         page = f.read()
