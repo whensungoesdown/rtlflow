@@ -54,6 +54,8 @@ python rtlflow.py FILES.v ... --top MODULE [--vcd SIM.vcd] [-o OUT.html]
 | Option | Meaning |
 |---|---|
 | `--top MODULE` | the module to draw; submodules are flattened into it |
+| `-f FLIST` | read the files, `+incdir+` and `+define+` of a simulator file list (repeatable). Nested `-f` is followed; `${PROJECT_ROOT}` is the parent of the flist's directory, as soc2's `simulate.sh` sets it; other `$VAR`s come from the environment |
+| `--skip REGEX` | leave out flist files whose path matches, e.g. `altera_mf` (simulation models Yosys can't read) |
 | `-I DIR`, `-D NAME[=VAL]` | include directories and defines for Yosys |
 | `--sv` | read all files as SystemVerilog (`.sv` files always are) |
 | `--param NAME=VAL` | set a parameter of the top module, as `-GNAME=VAL` in the simulation (repeatable) |
@@ -135,6 +137,20 @@ Things to get right:
 
 A whole LSU is about 230 blocks, which is too many to read at once. Use
 **Focus** (below) or `--only`.
+
+### Example: c7bexu from its flist
+
+```bash
+E=../soc2/rtl/cpu7b/rtl/c7bexu
+python rtlflow.py -f $E/flist/sim.files -I $E/rtl --skip altera_mf --top c7bexu     --blackbox c7blsu --blackbox c7bcsr --blackbox c7bexu_rf     --blackbox mul64x64 --blackbox div     --vcd examples/c7bexu/test2_exu.vcd -o examples/c7bexu/c7bexu.html
+```
+
+- `-I $E/rtl` is the `+incdir+` that `simulate.sh` adds on the vlog command line.
+- Without the `--blackbox` options, the flattened DTLB arrays inside the LSU
+  alone give 519 registers (692 in all, 7292 wires). With them, each of these
+  submodules is one block, and the EXU has 280 blocks.
+- `test2_exu.vcd` comes from `simulation/test2_exu`: `bash simulate.sh`,
+  then `wlf2vcd result.wlf -o test2_exu.vcd`.
 
 ## The example: c7blsu_stb
 

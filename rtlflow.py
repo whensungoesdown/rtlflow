@@ -13,6 +13,9 @@ sampled once per clock cycle.
 usage:
   python rtlflow.py FILE.v [FILE.v ...] --top MODULE [--vcd SIM.vcd] [-o OUT.html]
 
+  -f FLIST                   read files, +incdir+ and +define+ from a simulator file list
+                             (repeatable; nested -f, ${PROJECT_ROOT} = parent of the flist's dir)
+  --skip REGEX               leave out flist files whose path matches, e.g. altera_mf
   -I DIR / -D NAME[=VAL]     include directories and defines for Yosys
   --sv                       read all files as SystemVerilog (.sv files always are)
   --param NAME=VAL           set a parameter of the top module (as -GNAME=VAL in the simulation)
@@ -79,6 +82,59 @@ def run_yosys(files, top, incdirs, defines, sv=False, params=(), libs=(), boxes=
         d = json.load(f)
     os.remove(out)
     return d
+
+
+def read_flist(fn, files, incdirs, defines, skip, seen=None):
+    """expand a simulator file list (vlog/vcs/xrun style) into files, include
+    directories and defines.
+
+    - # and // start a comment
+    - ${PROJECT_ROOT} / $PROJECT_ROOT is the parent of the flist's directory
+      (as soc2's simulate.sh sets it); other ${VAR} / $VAR come from the
+      environment
+    - +incdir+DIR[+DIR...], +define+NAME[=VAL][+...], -f / -F nested flist,
+      -v FILE (library file); other options are ignored
+    - relative paths are relative to the flist's directory
+    """
+    seen = seen if seen is not None else set()
+    fn = os.path.abspath(fn)
+    if fn in seen:
+        return
+    seen.add(fn)
+    here = os.path.dirname(fn)
+    env = dict(os.environ, PROJECT_ROOT=os.path.dirname(here))
+
+    def sub(t):
+        t = re.sub(r'\$\{(\w+)\}|\$(\w+)', lambda m: env.get(m.group(1) or m.group(2), m.group(0)), t)
+        return t if os.path.isabs(t) else os.path.normpath(os.path.join(here, t))
+
+    with open(fn, encoding='utf-8', errors='replace') as f:
+        toks = []
+        for line in f:
+            line = re.sub(r'(#|//).*', '', line).strip()
+            toks += line.split()
+    it = iter(toks)
+    for t in it:
+        if t.startswith('+incdir+'):
+            incdirs += [sub(d) for d in t[8:].split('+') if d]
+        elif t.startswith('+define+'):
+            defines += [d for d in t[8:].split('+') if d]
+        elif t in ('-f', '-F'):
+            read_flist(sub(next(it)), files, incdirs, defines, skip, seen)
+        elif t == '-v':
+            files.append(sub(next(it)))
+        elif t in ('-y', '-work', '-L'):
+            next(it, None)
+        elif t.startswith(('-', '+')):
+            continue
+        else:
+            f = sub(t)
+            if any(re.search(x, f.replace(os.sep, '/')) for x in skip):
+                continue
+            if not os.path.exists(f):
+                print('rtlflow: %s: not found: %s' % (os.path.basename(fn), f), file=sys.stderr)
+                continue
+            files.append(f)
 
 
 def yp(p):
@@ -395,7 +451,9 @@ def trace_hex(v, width):
 # ------------------------------------------------------------------ main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('files', nargs='+')
+    ap.add_argument('files', nargs='*')
+    ap.add_argument('-f', dest='flists', action='append', default=[])
+    ap.add_argument('--skip', action='append', default=[])
     ap.add_argument('--top', required=True)
     ap.add_argument('-I', dest='incdirs', action='append', default=[])
     ap.add_argument('-D', dest='defines', action='append', default=[])
@@ -416,6 +474,11 @@ def main():
     ap.add_argument('-o', '--out')
     a = ap.parse_args()
 
+    for fl in a.flists:
+        read_flist(fl, a.files, a.incdirs, a.defines, a.skip)
+    a.files = list(dict.fromkeys(a.files))
+    if not a.files:
+        sys.exit('rtlflow: no Verilog files (give files or -f FLIST)')
     yj = run_yosys(a.files, a.top, a.incdirs, a.defines, a.sv, a.param, a.lib, a.blackbox)
     if a.top not in yj['modules']:
         sys.exit('rtlflow: module %s not found' % a.top)
