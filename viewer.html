@@ -9,7 +9,7 @@ body { display: flex; flex-direction: column; }
 #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 14px;
        background: #f7f7f7; border-bottom: 1px solid #ccc; }
 button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
-#hid { max-width: 150px; } #lit { max-width: 160px; }
+#hid, #lit { width: 125px; }
 .sep { width: 1px; height: 24px; background: #ccc; margin: 0 4px; }
 #pos { font-weight: bold; min-width: 130px; }
 #steps span { padding: 3px 8px; border: 1px solid #bbb; border-radius: 3px; margin-right: 3px; cursor: pointer;
@@ -31,6 +31,19 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 svg text { pointer-events: none; }
 .node { cursor: grab; }
 .node.drag { cursor: grabbing; opacity: 0.8; }
+.logic { font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.5; word-break: break-word; }
+.logic sub { color: #2456c8; font-size: 10px; }
+.logic sub.on { color: #c0392b; font-weight: bold; }
+table.cond { border-collapse: collapse; width: 100%; margin: 4px 0; }
+table.cond td { border-top: 1px solid #e3e3e3; padding: 3px 4px; vertical-align: top; }
+table.cond tr.take td { background: #fff1c9; }
+.pin { display: inline-block; font: bold 10px Arial; color: #fff; background: #b85450; border-radius: 3px;
+       padding: 0 4px; margin-right: 4px; vertical-align: 1px; }
+.pin.en { background: #3c7fb1; } .pin.hold { background: #888; }
+.ff { margin: 6px 0; padding: 5px 8px; background: #fbe9e9; border-left: 3px solid #b85450; font-size: 13px; }
+table.cond td.ok { width: 14px; text-align: center; font-family: Arial; }
+table.cond td.val { white-space: nowrap; }
+.chk { font-size: 12px; }
 #err { color: #b00; white-space: pre-wrap; font-family: Consolas, monospace; }
 </style></head>
 <body>
@@ -51,6 +64,7 @@ svg text { pointer-events: none; }
     <option value="nz">lit: non-zero</option><option value="bit">lit: 1-bit non-zero</option>
     <option value="chg">lit: changed</option></select>
   <select id="hid"></select>
+  <button id="back" style="display:none;font-weight:bold"></button>
   <button id="auto" title="arrange all blocks again">Auto layout</button>
   <button id="save" title="download the layout, use it with --layout">Save layout</button>
   <button id="load" title="load a saved layout">Load layout</button>
@@ -123,7 +137,7 @@ D.nodes.forEach(n => {
   let len = n.kind === 'inst' ? n.module.length : fmt('0'.repeat(Math.ceil(n.width / 4)), n.width).length;
   (D.values[n.id] || []).forEach(h => { len = Math.max(len, fmt(h, n.width).length); });
   const w = Math.max(tw(n.id, F_LBL), len * tw('0', F_VAL));
-  NW[n.id] = Math.round(Math.min(260, Math.max(80, w + 26)));
+  NW[n.id] = Math.round(Math.min(260, Math.max(80, w + 26 + (n.kind === 'reg' && n.ff ? 2 * tw(ffTags(n), 'bold 10px Arial') : 0))));
 });
 
 // ------------------------------------------------------------------ graph
@@ -481,6 +495,8 @@ function render() {
       u.dl = T(x0 + 14, b.y0 + 14, 'D', 'bold 12px Arial');
       u.dv = T(b.x + ox + 4, b.y0 + 14, '', 'bold 11px Consolas, monospace');
       u.lbl = T(b.x + ox, b.y0 + 34, n.id, F_LBL);
+      const ft = ffTags(n);
+      if (ft) T(b.x1 + ox - 8, b.y0 + 14, ft, 'bold 10px Arial', { 'text-anchor': 'end', fill: COL.reg[1] });
       u.q = el('rect', { x: x0 + 6, y: b.y0 + 44, width: b.w - 12, height: 22, stroke: COL.reg[1], 'stroke-width': 0.8 }, g);
       u.v = T(b.x + ox, b.y0 + 55.5, '', 'bold 12px Consolas, monospace');
       el('polygon', { points: `${x0},${b.y1 - 16} ${x0 + 9},${b.y1 - 10} ${x0},${b.y1 - 4}`, fill: '#fff', stroke: COL.reg[1] }, g);
@@ -613,6 +629,7 @@ function info() {
   else h += '<p>';
   if (n.kind === 'reg' && c + 1 < NC) h += `<br>next: <span class="mono">${full(val(sel, c + 1), n.width)}</span>`;
   h += `</p><p>from: ${lk(G.fin[sel] || [])}<br>to: ${lk(G.fout[sel] || [])}</p>`;
+  if (NC || n.expr) h += logicHTML(sel, NC ? c : null);
   if (n.kind !== 'inst' && NC) h += `<p><button id="pchg">&lsaquo; prev change</button> <button id="nchg">next change &rsaquo;</button></p>`;
   if (n.kind !== 'inst' && NC) h += `<p class="find">find value: <input id="vq" class="mono" size="18"
     placeholder="${n.width <= 8 ? 'binary, e.g. 01?1' : 'hex, e.g. 7000????'}"
@@ -643,6 +660,274 @@ function info() {
   }
 }
 
+
+// ------------------------------------------------------------------ logic of a block
+// e: expression tree from rtlflow.py (exprs_of). Values are {v: BigInt, m: BigInt
+// mask of the unknown bits}.
+const BMASK = w => (1n << BigInt(w)) - 1n;
+function hexVal(h, w) {
+  if (h == null) return { v: 0n, m: BMASK(w) };
+  let v = 0n, m = 0n;
+  for (const ch of h) {
+    v <<= 4n; m <<= 4n;
+    if (/[xz]/.test(ch)) m |= 15n; else v |= BigInt(parseInt(ch, 16));
+  }
+  return { v: v & BMASK(w), m: m & BMASK(w) };
+}
+const XV = w => ({ v: 0n, m: BMASK(w) });
+const toS = (v, w) => (w && v >> BigInt(w - 1) & 1n ? v - (1n << BigInt(w)) : v);
+function ev(e, c) {
+  const w = e.w, M = BMASK(w), a = e.a || [];
+  const known = (...xs) => xs.every(x => x.m === 0n);
+  const r = v => ({ v: ((v % (1n << BigInt(w))) + (1n << BigInt(w))) & M, m: 0n });
+  switch (e.o) {
+    case 's': {
+      const n = NODE[e.n], x = hexVal(val(e.n, c), n ? n.width : e.l + w), sh = BigInt(e.l);
+      return { v: (x.v >> sh) & M, m: (x.m >> sh) & M };
+    }
+    case 'k': { let v = 0n, m = 0n; for (const ch of e.v) { v <<= 1n; m <<= 1n; if (ch === '1') v |= 1n; else if (ch !== '0') m |= 1n; } return { v, m }; }
+    case '{}': { let v = 0n, m = 0n; for (const x of a) { const y = ev(x, c); v = (v << BigInt(x.w)) | y.v; m = (m << BigInt(x.w)) | y.m; } return { v, m }; }
+    case '[]': { const y = ev(a[0], c), sh = BigInt(e.l); return { v: (y.v >> sh) & M, m: (y.m >> sh) & M }; }
+    case 'mux': {
+      const s = ev(a[0], c);
+      if (s.m) return XV(w);
+      return ev(s.v ? a[1] : a[2], c);
+    }
+    case 'pmux': {
+      for (let i = 1; i < a.length; i += 2) {
+        const s = ev(a[i], c);
+        if (s.m) return XV(w);
+        if (s.v) return ev(a[i + 1], c);
+      }
+      return ev(a[0], c);
+    }
+  }
+  if (e.o === '...' || e.o === 'i') return XV(w);
+  const x = a.map(y => ev(y, c));
+  // a known 0 decides an and, a known 1 an or, whatever the other side is
+  if (e.o === 'logic_and' && x.some(y => !y.m && !y.v)) return r(0n);
+  if (e.o === 'logic_or' && x.some(y => !y.m && y.v)) return r(1n);
+  if (e.o === 'and' && w === 1 && x.some(y => !y.m && !y.v)) return r(0n);
+  if (e.o === 'or' && w === 1 && x.some(y => !y.m && y.v)) return r(1n);
+  if (!known(...x)) return XV(w);
+  const [A, B] = x.map(y => y.v), aw = a[0].w, bw = a[1] ? a[1].w : 0;
+  const sa = e.s ? toS(A, aw) : A, sb = e.s && a[1] ? toS(B, bw) : B;
+  switch (e.o) {
+    case 'not': return r(~A);
+    case 'neg': return r(-A);
+    case 'logic_not': return r(A ? 0n : 1n);
+    case 'reduce_and': return r(A === BMASK(aw) ? 1n : 0n);
+    case 'reduce_or': case 'reduce_bool': return r(A ? 1n : 0n);
+    case 'reduce_xor': case 'reduce_xnor': { let p = 0n; for (let t = A; t; t >>= 1n) p ^= t & 1n; return r(e.o === 'reduce_xor' ? p : 1n - p); }
+    case 'and': return r(A & B);
+    case 'or': return r(A | B);
+    case 'xor': return r(A ^ B);
+    case 'xnor': return r(~(A ^ B));
+    case 'logic_and': return r(A && B ? 1n : 0n);
+    case 'logic_or': return r(A || B ? 1n : 0n);
+    case 'eq': case 'eqx': return r(A === B ? 1n : 0n);
+    case 'ne': case 'nex': return r(A !== B ? 1n : 0n);
+    case 'lt': return r(sa < sb ? 1n : 0n);
+    case 'le': return r(sa <= sb ? 1n : 0n);
+    case 'gt': return r(sa > sb ? 1n : 0n);
+    case 'ge': return r(sa >= sb ? 1n : 0n);
+    case 'add': return r(A + B);
+    case 'sub': return r(A - B);
+    case 'mul': return r(sa * sb);
+    case 'div': return sb ? r(sa / sb) : XV(w);
+    case 'mod': return sb ? r(sa % sb) : XV(w);
+    case 'shl': case 'sshl': return r(A << B);
+    case 'shr': case 'shift': case 'shiftx': return r(A >> B);
+    case 'sshr': return r(sa >> B);
+  }
+  return XV(w);
+}
+function evHex(e, c) {             // as the values of the dump: hex digits, x for unknown
+  const y = ev(e, c), n = Math.ceil(e.w / 4);
+  let h = '';
+  for (let i = n - 1; i >= 0; i--) {
+    const sh = BigInt(i * 4);
+    h += (y.m >> sh) & 15n ? 'x' : ((y.v >> sh) & 15n).toString(16);
+  }
+  return h;
+}
+
+const SYM = { and: '&', or: '|', xor: '^', xnor: '~^', logic_and: '&&', logic_or: '||', eq: '==', ne: '!=',
+  eqx: '===', nex: '!==', lt: '<', le: '<=', gt: '>', ge: '>=', add: '+', sub: '-', mul: '*', div: '/', mod: '%',
+  shl: '<<', shr: '>>', sshl: '<<<', sshr: '>>>', shift: '>>', shiftx: '>>' };
+const UN = { not: '~', neg: '-', logic_not: '!', reduce_and: '&', reduce_or: '|', reduce_xor: '^', reduce_xnor: '~^', reduce_bool: '|' };
+const ASSOC = new Set(['and', 'or', 'xor', 'logic_and', 'logic_or', 'add']);
+const ATOM = new Set(['s', 'k', 'i', '{}', '[]', '...']);
+function konst(e) {
+  if (e.w === 1 && /^[01]$/.test(e.v)) return "1'b" + e.v;
+  if (/^0+$/.test(e.v)) return e.w + "'h0";
+  if (/[xz]/.test(e.v) || e.w <= 4) return e.w + "'b" + e.v;
+  let h = '';
+  const b = e.v.padStart(Math.ceil(e.w / 4) * 4, '0');
+  for (let i = 0; i < b.length; i += 4) h += parseInt(b.slice(i, i + 4), 2).toString(16);
+  return e.w + "'h" + h;
+}
+function rng(lo, w) { return w === 1 ? `[${lo}]` : `[${lo + w - 1}:${lo}]`; }
+// text of an expression; leaves of up to 8 bits get their value at cycle c as a subscript
+function show(e, c) {
+  const a = e.a || [];
+  const par = x => (ATOM.has(x.o) || (UN[x.o] && ATOM.has(x.a[0].o)) ? show(x, c) : '(' + show(x, c) + ')');
+  switch (e.o) {
+    case 's': {
+      const n = NODE[e.n], full = n && e.l === 0 && e.w === n.width;
+      let t = `<a data-id="${e.n}">${e.n}</a>` + (full ? '' : rng(e.l, e.w));
+      if (c != null && e.w <= 8) {
+        const h = evHex(e, c);
+        t += `<sub class="${/[1-9a-f]/.test(h) ? 'on' : ''}">${fmt(h, e.w)}</sub>`;
+      }
+      return t;
+    }
+    case 'k': return konst(e);
+    case 'i': return `<i>${e.n}</i>`;
+    case '...': return e.t ? `<i>$${e.t}(…)</i>` : '…';
+    case '{}': return '{' + a.map(x => show(x, c)).join(', ') + '}';
+    case '[]': return par(a[0]) + rng(e.l, e.w);
+    case 'mux': return par(a[0]) + ' ? ' + par(a[1]) + ' : ' + (a[2].o === 'mux' ? show(a[2], c) : par(a[2]));
+    case 'pmux': {
+      let t = '';
+      for (let i = 1; i < a.length; i += 2) t += par(a[i]) + ' ? ' + par(a[i + 1]) + ' : ';
+      return t + par(a[0]);
+    }
+  }
+  if (UN[e.o]) return UN[e.o] + par(a[0]);
+  if (SYM[e.o]) return a.map(x => (x.o === e.o && ASSOC.has(e.o) ? show(x, c) : par(x))).join(' ' + SYM[e.o] + ' ');
+  return e.o + '(' + a.map(x => show(x, c)).join(', ') + ')';
+}
+// the mux tree at the top of an expression as rows: [conditions (expr, negated)], value
+function rows(e, conds = [], out = [], depth = 0) {
+  if (out.length >= 32 || depth > 12) { out.push({ conds, e }); return out; }
+  if (e.o === 'mux') {
+    const pin = { role: e.role, pin: e.pin, k: e.k, as: e.as };
+    const t = rows(e.a[1], conds.concat([Object.assign({ e: e.a[0], neg: false }, pin)]), [], depth + 1);
+    const f = rows(e.a[2], conds.concat([Object.assign({ e: e.a[0], neg: true }, pin)]), [], depth + 1);
+    // the reset goes last: resetn ? logic : 0 lists the logic first
+    const rst = e.role === 'srst' || e.role === 'arst' ? (e.k ? 1 : -1) : isReset(e.a[0]);
+    out.push(...(rst === 1 ? f.concat(t) : t.concat(f)));
+  } else if (e.o === 'pmux') {
+    const no = [];
+    for (let i = 1; i < e.a.length; i += 2) {
+      rows(e.a[i + 1], conds.concat([{ e: e.a[i], neg: false }]), out, depth + 1);
+      no.push({ e: e.a[i], neg: true });
+    }
+    rows(e.a[0], conds.concat(no), out, depth + 1);
+  } else out.push({ conds, e });
+  return out;
+}
+function isReset(x) {              // 1: x is a reset (active high), -1: an active-low reset, 0: not
+  let neg = false;
+  if (x.o === 'logic_not' || (x.o === 'not' && x.w === 1)) { neg = true; x = x.a[0]; }
+  if (x.o !== 's' || !NODE[x.n] || NODE[x.n].kind !== 'input' || !DEF_HIDDEN.has(x.n) || NODE[x.n].clock) return 0;
+  const low = /(_?n|_?l|_?b)$/i.test(x.n);
+  return low !== neg ? -1 : 1;
+}
+function condTrue(k, c) {          // 1 true, 0 false, null unknown
+  const y = ev(k.e, c);
+  if (y.m) return null;
+  return (y.v !== 0n) !== k.neg;
+}
+
+// ------------------------------------------------------------------ flip-flop kinds
+// the muxes in front of D that rtlflow.py recognised as flip-flop pins: role 'en'
+// (one arm is the register itself: it holds), 'srst' (sync reset to a constant),
+// 'arst' (asynchronous reset); pin = the library cell's port (en, rst_l) or the Yosys
+// cell's port (EN, SRST, ARST); k = 1 if the special arm (hold / reset) is 'then'
+function ffPins(n) {
+  const out = [];
+  let e = n.expr;
+  if (e && e.o === '{}' && e.a.every(x => x.o === 'mux' && x.role)) e = e.a[e.a.length - 1];   // several cells: as bit 0's
+  while (e && e.o === 'mux' && e.role) { out.push(e); e = e.a[e.k ? 2 : 1]; }
+  return out;
+}
+const special = k => (k.neg ? k.k === 0 : k.k === 1);   // the condition selects the hold / reset arm
+function ffTags(n) {
+  if (n.kind !== 'reg' || !n.ff) return '';
+  const t = ffPins(n).map(p => (p.role === 'en' ? 'EN' : p.role === 'arst' ? 'AR' : 'R'));
+  return [...new Set(t)].join(' ');
+}
+function selText(p, c) {           // the select written as an active-high condition for the pin
+  return show(p.a[0], c);
+}
+function ffHTML(n) {
+  const f = n.ff;
+  if (!f) return '';
+  const pins = ffPins(n);
+  const kind = [];
+  const lib = f.module ? ` <b>${f.module}</b> (instance <i>${f.inst}</i>)` : '';
+  for (const p of pins) {
+    const pn = p.pin ? `pin <b>${p.pin}</b>` : 'no pin, from the logic';
+    if (p.role === 'en') {
+      kind.push(`<span class="pin en">enable</span>${pn}: loads when ${p.k ? '!(' + selText(p) + ')' : selText(p)}, ` +
+                `otherwise <b>holds</b> its value`);
+    } else {
+      const v = p.a[p.k ? 1 : 2];
+      kind.push(`<span class="pin">${p.role === 'arst' ? 'async reset' : 'sync reset'}</span>${pn}: ` +
+                `${p.k ? selText(p) : '!' + selText(p)} sets it to ${v.o === 'k' ? konst(v) : show(v)}`);
+    }
+  }
+  const what = !pins.length ? 'D flip-flop, no enable, no reset: loads its D input at every edge'
+    : 'D flip-flop with ' + pins.map(p => (p.role === 'en' ? 'enable' : p.role === 'arst' ? 'asynchronous reset' : 'synchronous reset')).join(', ');
+  return `<div class="ff">${what}${lib}, ${f.edge === 'neg' ? 'falling' : 'rising'} edge of <a data-id="${f.clk}">${f.clk}</a>` +
+         (f.parts > 1 ? ` <span class="muted">(${f.parts} flip-flop cells)</span>` : '') +
+         (kind.length ? '<br>' + kind.join('<br>') : '') + '</div>';
+}
+function rowTag(r, hold) {         // the label of a row of the next-value table
+  const p = r.conds.filter(k => k.role);
+  const rst = p.find(k => /rst/.test(k.role) && special(k));
+  if (rst) return `<span class="pin">${rst.role === 'arst' ? 'async reset' : 'reset'}${rst.pin ? ' ' + rst.pin : ''}</span>`;
+  const en = p.filter(k => k.role === 'en');
+  if (!en.length) return hold ? '<span class="pin hold">hold</span>' : '';
+  const last = en[en.length - 1];
+  return special(last) ? `<span class="pin hold">hold${last.pin ? ': ' + last.pin + ' off' : ''}</span>`
+                       : `<span class="pin en">load${last.pin ? ': ' + last.pin + ' on' : ''}</span>`;
+}
+function logicHTML(id, c) {
+  const n = NODE[id], e = n.expr;
+  if (!e) return '';
+  const isReg = n.kind === 'reg';
+  const self = x => x.o === 's' && x.n === id && x.l === 0 && x.w === n.width;
+  let h = isReg ? ffHTML(n) : '';
+  h += `<p><b>${isReg ? 'Next value (D input)' : 'Logic'}</b>`;
+  const rs = rows(e);
+  if (rs.length > 1) {
+    h += isReg ? ', loaded at the clock edge:' : ':';
+    h += '<table class="cond">';
+    for (const r of rs) {
+      const st = r.conds.map(k => condTrue(k, c));
+      const take = st.every(x => x === true), out = st.some(x => x === false);
+      const cond = r.conds.length ? r.conds.map(k => (k.neg ? '!' : '') + (k.neg && !ATOM.has(k.e.o) ? '(' + show(k.e, c) + ')' : show(k.e, c)) +
+        (k.as ? ' <i>(async)</i>' : '')).join(' &amp;&amp; ') : 'always';
+      const isRst = r.conds.some(k => (k.role ? /rst/.test(k.role) && special(k) : isReset(k.e) && (isReset(k.e) === 1) !== k.neg));
+      const tag = rowTag(r, self(r.e));
+      const v = self(r.e) ? '<i>hold</i>' : show(r.e, c);
+      const now = take && !self(r.e) && r.e.w > 8 ? ` <span class="muted">= ${fmt(evHex(r.e, c), r.e.w)}</span>` : '';
+      h += `<tr class="${take ? 'take' : ''}"><td class="ok">${take ? '&#9654;' : out ? '' : '?'}</td>` +
+           `<td>${tag || (isRst ? '<span class="pin">reset</span> ' : '')}${cond}</td><td class="val">&rarr; ${v}${now}</td></tr>`;
+    }
+    h += '</table>';
+  } else {
+    h += ':<div class="logic">' + (isReg ? '&larr; ' : '= ') + show(e, c) + '</div>';
+  }
+  // the value the logic gives, against the dump
+  const got = evHex(e, c), want = isReg ? (c + 1 < NC ? val(id, c + 1) : null) : val(id, c);
+  if (/x/.test(got)) h += `<span class="chk muted">${isReg ? 'next' : 'value'}: unknown (an x or a block without values in the logic)</span>`;
+  else if (want != null) {
+    const ok = hexVal(want, n.width).m === 0n && hexVal(want, n.width).v === hexVal(got, n.width).v;
+    h += `<span class="chk ${ok ? 'muted' : ''}" style="${ok ? '' : 'color:#b00'}">${isReg ? 'next' : 'value'}: ${fmt(got, n.width)} ` +
+         (ok ? '&#10003; as in the dump' : `&ne; ${fmt(want, n.width)} in the dump`) + '</span>';
+  }
+  if (isReg) {
+    const loads = rs.filter(r => !self(r.e));
+    if (rs.length > 1 && loads.length < rs.length)
+      h += `<br><span class="chk muted">Changes only in the ${loads.length === 1 ? 'row' : 'rows'} without <i>hold</i>; ` +
+           `the highlighted row is the one taken in this cycle.</span>`;
+  }
+  return h + '</p>';
+}
 // ------------------------------------------------------------------ value search
 const VQ = { text: '', msg: '', focus: false };
 function bitsOf(h, w) {               // hex value -> bit string, MSB first, w bits
@@ -771,7 +1056,7 @@ function hidSel() {
 document.getElementById('lit').onchange = e => { LIT = e.target.value; try { localStorage.setItem('rtlflow:lit', LIT); } catch (x) { /* */ } update(false); };
 document.getElementById('hid').onchange = e => {
   const id = e.target.value;
-  if (id === '*') { hidden = new Set(D.nodes.filter(n => n.clock || DEF_HIDDEN.has(n.id)).map(n => n.id)); rearrange(); }
+  if (id === '*') { hidden = new Set(D.nodes.filter(n => n.clock || DEF_HIDDEN.has(n.id)).map(n => n.id)); VIEWS.length = 0; FOCUSED = null; rearrange(); backBtn(); }
   else if (id) { hidden.delete(id); sel = id; relayout(); }
 };
 function rearrange() { buildGraph(); autoLayout(); route(); render(); update(false); hidSel(); store(); fit(); }
@@ -789,11 +1074,31 @@ function focus(id, k) {
       front = nf;
     }
   }
+  VIEWS.push({ hidden: new Set(hidden), L: JSON.parse(JSON.stringify(L)), sel, focus: FOCUSED });
+  FOCUSED = id;
   hidden = new Set(D.nodes.filter(n => !keep.has(n.id) || n.clock || DEF_HIDDEN.has(n.id)).map(n => n.id));
   hidden.delete(id);
   sel = id;
   rearrange();
+  backBtn();
 }
+const VIEWS = [];                  // the views before each Focus, for Back
+let FOCUSED = null;
+function back() {
+  const v = VIEWS.pop();
+  if (!v) return;
+  hidden = v.hidden; L = v.L; sel = v.sel; FOCUSED = v.focus;
+  buildGraph();
+  for (const n of G.nodes) if (!L.pos[n.id]) place(n.id);
+  route(); render(); update(false); hidSel(); store(); fit(); backBtn();
+}
+function backBtn() {
+  const b = document.getElementById('back');
+  b.style.display = VIEWS.length ? '' : 'none';
+  b.textContent = VIEWS.length > 1 ? `\u2190 Back (${VIEWS.length})` : '\u2190 Back';
+  b.title = VIEWS.length ? 'back to the view before Focus on ' + FOCUSED + ' (Backspace)' : '';
+}
+document.getElementById('back').onclick = back;
 document.getElementById('auto').onclick = rearrange;
 document.getElementById('save').onclick = () => {
   const a = document.createElement('a');
@@ -847,7 +1152,7 @@ document.onkeydown = e => {
   const k = { ArrowLeft: () => go(here() - 1), ArrowRight: () => go(here() + 1),
               ArrowUp: () => $('pcyc').onclick(), PageUp: () => $('pcyc').onclick(),
               ArrowDown: () => $('ncyc').onclick(), PageDown: () => $('ncyc').onclick(),
-              Home: () => go(0), End: () => go(NSTEP - 1), ' ': play }[e.key];
+              Home: () => go(0), End: () => go(NSTEP - 1), ' ': play, Backspace: back }[e.key];
   if (k) { e.preventDefault(); k(); }
 };
 

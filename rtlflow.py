@@ -287,6 +287,10 @@ def build_graph(yj, top, hide):
     for n in nodes:
         n['fanin'] = [f for f in n['fanin'] if f in keep]
 
+    # the logic of each block as an expression over the named signals: the
+    # anonymous cells between named signals are expanded, named signals are leaves
+    exprs_of(m, nodes, keep, owner, driver, bits_of, reg_bits)
+
     # declaration order (file, line) gives a sensible first ordering
     def line(n):
         mm = re.search(r'(.*):(\d+)', n['src'].split('|')[0])
@@ -297,6 +301,239 @@ def build_graph(yj, top, hide):
               or any(re.search(h, n['id']) for h in hide)]
     return nodes, hidden
 
+
+EXPR_MAX = 400          # nodes per expression; a bigger one ends in '...'
+BIN_OPS = {'$and', '$or', '$xor', '$xnor', '$logic_and', '$logic_or', '$eq', '$ne', '$eqx', '$nex', '$lt', '$le',
+           '$gt', '$ge', '$add', '$sub', '$mul', '$div', '$mod', '$shl', '$shr', '$sshl', '$sshr', '$shift', '$shiftx'}
+UN_OPS = {'$not', '$neg', '$logic_not', '$reduce_and', '$reduce_or', '$reduce_xor', '$reduce_xnor', '$reduce_bool'}
+
+
+def pbits(v):
+    """a Yosys parameter as a bit string, MSB first"""
+    return v if isinstance(v, str) and re.fullmatch(r'[01xz]+', v) else bin(int(v))[2:]
+
+
+def exprs_of(m, nodes, keep, owner, driver, bits_of, reg_bits):
+    """sets n['expr'] (value of a comb block / output) and, for a register, the
+    next value it loads at the clock edge. Trees with short keys:
+      {o:'s', n:name, l:lo, w}      bits lo..lo+w-1 of a named signal
+      {o:'k', v:'01x..', w}         constant, MSB first
+      {o:'{}', a:[msb..lsb], w}     concatenation
+      {o:'[]', a:[e], l:lo, w}      bits of an expression
+      {o:'i', n:'inst.port', w}     output of a submodule block (no value)
+      {o:'mux', a:[sel, then, else], w, as:1 if an asynchronous reset}
+      {o:'pmux', a:[default, sel0, case0, sel1, case1, ...], w}
+      {o:op, a:[...], w, s:1 if signed}   $and -> 'and', ...
+      {o:'...', w}                  not expanded (too big, a loop, memory)
+    """
+    cells = m['cells']
+    drv_i = {}
+    for cn, c in cells.items():
+        dirs = c.get('port_directions', {})
+        for p, bits in c['connections'].items():
+            if dirs.get(p) == 'output':
+                for i, b in enumerate(bits):
+                    if isinstance(b, int):
+                        drv_i[b] = i
+    # flattened instances ($scopeinfo cells, flatten keeps them): their module and port nets,
+    # to name the pins of a library flip-flop (dffe_ns.en, dffrl_ns.rst_l, ...)
+    scopes = {cn: c.get('attributes', {}) for cn, c in cells.items() if c['type'] == '$scopeinfo'}
+    inst_ports = {}
+    for nn, v in m['netnames'].items():
+        hd = v.get('attributes', {}).get('hdlname')
+        if hd and ' ' in hd:
+            parts = hd.split(' ')
+            inst_ports.setdefault('.'.join(parts[:-1]), {})[parts[-1]] = tuple(v['bits'])
+
+    def inst_of(cn):                                    # $flatten\a.\b.$procdff$12 -> a.b
+        if '$flatten' not in cn:
+            return None
+        path = cn.replace('$flatten', '').replace(chr(92), '').rsplit('.$', 1)[0]
+        return path if path in scopes else None
+
+    def pin_of(inst, bits):
+        for port, pb in inst_ports.get(inst, {}).items():
+            if pb == tuple(bits):
+                return port
+        return None
+
+    own_i, width = {}, {}
+    for n in nodes:
+        if n['kind'] == 'inst':
+            continue
+        bits = bits_of(n['id'])
+        width[n['id']] = len(bits)
+        for i, b in enumerate(bits):
+            if owner.get(b) == n['id']:
+                own_i[b] = i
+
+    for n in nodes:
+        if n['kind'] in ('input', 'inst'):
+            continue
+        budget = [EXPR_MAX]
+        name = n['id']
+
+        def new(d):
+            budget[0] -= 1
+            return d
+
+        def sig(bits, depth, top=False):
+            segs = []                                   # [kind, key, first index, count, const bits]
+            for b in bits:
+                if not isinstance(b, int):
+                    k = ('c', None, 0)
+                elif b in owner and owner[b] in keep and not (top and owner[b] == name):
+                    k = ('s', owner[b], own_i.get(b, 0))
+                elif b in driver and driver[b][0] != '<port>':
+                    k = ('d', driver[b], drv_i.get(b, 0))
+                else:
+                    k = ('c', None, 0)
+                    b = 'x'
+                last = segs[-1] if segs else None
+                if last and last[0] == k[0] and last[1] == k[1] and (k[0] == 'c' or k[2] == last[2] + last[3]):
+                    last[3] += 1
+                    last[4].append(b)
+                else:
+                    segs.append([k[0], k[1], k[2], 1, [b]])
+            out = []
+            for kind, key, lo, cnt, cb in segs:
+                if budget[0] <= 0 or depth > 40:
+                    out.append({'o': '...', 'w': cnt})
+                elif kind == 'c':
+                    out.append(new({'o': 'k', 'v': ''.join(str(x) for x in reversed(cb)), 'w': cnt}))
+                elif kind == 's':
+                    out.append(new({'o': 's', 'n': key, 'l': lo, 'w': cnt}))
+                else:
+                    cn, port = key
+                    e = cell(cn, port, depth + 1)
+                    pw = len(cells[cn]['connections'][port])
+                    if lo or cnt != pw:
+                        e = new({'o': '[]', 'a': [e], 'l': lo, 'w': cnt})
+                    out.append(e)
+            if len(out) == 1:
+                return out[0]
+            return new({'o': '{}', 'a': out[::-1], 'w': len(bits)})
+
+        def cell(cn, port, depth):
+            c = cells[cn]
+            t, conn, prm = c['type'], c['connections'], c.get('parameters', {})
+            w = len(conn[port])
+            if not t.startswith('$'):
+                return new({'o': 'i', 'n': cn + '.' + port, 'w': w})
+            signed = all(int(pbits(prm.get(k, '0')), 2) for k in ('A_SIGNED', 'B_SIGNED') if k in prm)
+            if t in BIN_OPS:
+                e = {'o': t[1:], 'a': [sig(conn['A'], depth), sig(conn['B'], depth)], 'w': w}
+            elif t in UN_OPS:
+                e = {'o': t[1:], 'a': [sig(conn['A'], depth)], 'w': w}
+            elif t == '$pos':
+                return sig(conn['A'], depth)
+            elif t == '$mux':
+                e = {'o': 'mux', 'a': [sig(conn['S'], depth), sig(conn['B'], depth), sig(conn['A'], depth)], 'w': w}
+            elif t == '$pmux':
+                a = [sig(conn['A'], depth)]
+                for i, sb in enumerate(conn['S']):
+                    a += [sig([sb], depth), sig(conn['B'][i * w:(i + 1) * w], depth)]
+                e = {'o': 'pmux', 'a': a, 'w': w}
+            else:
+                return new({'o': '...', 'w': w, 't': t[1:]})
+            if signed and e['o'] in ('lt', 'le', 'gt', 'ge', 'sshr', 'div', 'mod', 'mul', 'neg'):
+                e['s'] = 1
+            return new(e)
+
+        def pol(bits, p):
+            e = sig(bits, 1)
+            return e if int(pbits(p), 2) else new({'o': 'logic_not', 'a': [e], 'w': 1})
+
+        def const(p, lo, cnt):
+            v = pbits(p)[::-1].ljust(lo + cnt, '0')
+            return new({'o': 'k', 'v': v[lo:lo + cnt][::-1], 'w': cnt})
+
+        def is_reset_sel(sbits, pin):
+            if pin and re.match(RESET_RE, pin):
+                return True
+            names = {owner.get(b) for b in sbits}
+            return len(names) == 1 and None not in names and bool(re.match(RESET_RE, names.pop()))
+
+        def chain(dbits, qbits, inst, depth):
+            # the muxes at the D input: one arm the register's own Q is an enable (the
+            # register holds), one arm a constant with a reset as select is a reset.
+            # Tagged with role, the library pin (if the select is one) and k: 1 if
+            # the special arm (hold / reset value) is the 'then' arm, 0 if the 'else' arm.
+            d0 = dbits[0] if dbits else None
+            drv = driver.get(d0) if isinstance(d0, int) else None
+            if depth > 8 or not drv or drv[0] == '<port>' or cells[drv[0]]['type'] != '$mux' or drv[1] != 'Y':
+                return sig(dbits, 1)
+            i0 = drv_i[d0]
+            if any(driver.get(b) != drv or drv_i.get(b) != i0 + i for i, b in enumerate(dbits)):
+                return sig(dbits, 1)
+            conn = cells[drv[0]]['connections']
+            A, B, S = conn['A'][i0:i0 + len(dbits)], conn['B'][i0:i0 + len(dbits)], conn['S']
+            pin = pin_of(inst, S) if inst else None
+            const_arm = lambda x: all(not isinstance(b, int) for b in x)
+            if A == qbits or B == qbits:
+                k = 1 if B == qbits else 0
+                data = chain(A if k else B, qbits, inst, depth + 1)
+                hold = sig(qbits, 1)
+                arms = [hold, data] if k else [data, hold]
+                return new({'o': 'mux', 'a': [sig(S, 1)] + arms, 'w': len(dbits), 'role': 'en', 'pin': pin, 'k': k})
+            if (const_arm(A) or const_arm(B)) and is_reset_sel(S, pin):
+                k = 1 if const_arm(B) else 0
+                data = chain(A if k else B, qbits, inst, depth + 1)
+                rst = sig(B if k else A, 1)
+                arms = [rst, data] if k else [data, rst]
+                return new({'o': 'mux', 'a': [sig(S, 1)] + arms, 'w': len(dbits), 'role': 'srst', 'pin': pin, 'k': k})
+            return sig(dbits, 1)
+
+        def next_value(cn, lo, cnt):
+            c = cells[cn]
+            t, conn, prm = c['type'], c['connections'], c.get('parameters', {})
+            if 'D' not in conn:
+                return new({'o': '...', 'w': cnt, 't': t[1:]})
+            qb = conn['Q'][lo:lo + cnt]
+            e = chain(conn['D'][lo:lo + cnt], qb, inst_of(cn), 0)
+            q = sig(qb, 1)
+            if 'EN' in conn:
+                e = new({'o': 'mux', 'a': [pol(conn['EN'], prm.get('EN_POLARITY', '1')), e, q], 'w': cnt,
+                         'role': 'en', 'pin': 'EN', 'k': 0})
+            if 'SRST' in conn:
+                e = new({'o': 'mux', 'a': [pol(conn['SRST'], prm.get('SRST_POLARITY', '1')),
+                                          const(prm.get('SRST_VALUE', '0'), lo, cnt), e], 'w': cnt,
+                         'role': 'srst', 'pin': 'SRST', 'k': 1})
+            if 'ARST' in conn:
+                e = new({'o': 'mux', 'a': [pol(conn['ARST'], prm.get('ARST_POLARITY', '1')),
+                                          const(prm.get('ARST_VALUE', '0'), lo, cnt), e], 'w': cnt, 'as': 1,
+                         'role': 'arst', 'pin': 'ARST', 'k': 1})
+            return e
+
+        def ff_info(cn):
+            c = cells[cn]
+            conn, prm = c['connections'], c.get('parameters', {})
+            inst = inst_of(cn)
+            clk = owner.get(conn['CLK'][0]) if 'CLK' in conn and isinstance(conn['CLK'][0], int) else None
+            return {'cell': c['type'][1:], 'inst': inst,
+                    'module': scopes[inst].get('module_hdlname') if inst else None,
+                    'clk': clk, 'edge': 'neg' if 'CLK_POLARITY' in prm and not int(pbits(prm['CLK_POLARITY']), 2) else 'pos'}
+
+        bits = bits_of(name)
+        if n['kind'] == 'reg':
+            parts = []                                  # [cell, first Q index, count]
+            for b in bits:
+                d = driver.get(b) if isinstance(b, int) and b in reg_bits else None
+                if d is None:
+                    parts.append(['', 0, 1])
+                    continue
+                last = parts[-1] if parts else None
+                if last and last[0] == d[0] and drv_i[b] == last[1] + last[2]:
+                    last[2] += 1
+                else:
+                    parts.append([d[0], drv_i[b], 1])
+            out = [next_value(cn, lo, cnt) if cn else {'o': '...', 'w': cnt} for cn, lo, cnt in parts]
+            n['expr'] = out[0] if len(out) == 1 else {'o': '{}', 'a': out[::-1], 'w': len(bits)}
+            cn0 = [cn for cn, lo, cnt in parts if cn]
+            if cn0:
+                n['ff'] = dict(ff_info(cn0[0]), parts=len(set(cn0)))
+        else:
+            n['expr'] = sig(bits, 0, top=True)
 
 # ------------------------------------------------------------------ VCD
 def norm(path):

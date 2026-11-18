@@ -219,6 +219,39 @@ step.
 - Click a block to select it. Its wires are drawn dark, and the side panel
   shows its kind, width, source line, value, next value, and the blocks it
   comes from and goes to (as links).
+- **Logic**: the side panel shows the logic of the selected block, written
+  with the named signals of the module (the anonymous cells between them are
+  expanded):
+  - For a **register**, its next value (the D input) as a table of
+    conditions. Each `if/else` / `?:` level is a row, `hold` marks the rows
+    in which it keeps its value, so the other rows are the conditions on
+    which it changes. The reset row comes last. Enables and resets of the
+    flip-flop itself are included (`(async)` marks an asynchronous reset).
+  - **The kind of flip-flop**, above the table: plain D flip-flop, with
+    enable, with synchronous or asynchronous reset. For a library cell it
+    names the cell and its pins, e.g. `dffe_ns` (instance `err_vaddr_reg`),
+    *enable pin `en`: loads when `err_set & ~err_hold`, otherwise holds its
+    value*. The rows are labelled with the pin: `load: en on`, `hold: en off`,
+    `reset rst_l`. The register boxes in the diagram carry the same as tags:
+    `EN` enable, `R` synchronous reset, `AR` asynchronous reset.
+
+    rtlflow finds these from the netlist. A mux in front of D with the
+    register's own output on one arm is an enable; a mux with a constant arm
+    and a reset as its select (by name, `rst`/`reset` with `_n`/`_l`) is a
+    reset. The pin names come from the flattened instance, so they work for
+    library flops (`dffe_ns`, `dffrl_ns`, `dffrle_ns`, ...) and for flops
+    written as `always` blocks (then there is no pin name). Yosys flip-flop
+    cells with their own `EN`/`SRST`/`ARST` ports are labelled with those.
+  - For a **logic block** or an output, the expression of its value.
+  - Signals of up to 8 bits carry their value in the current cycle as a
+    subscript (red when non-zero), and the row taken in this cycle is
+    highlighted. Signal names are links.
+  - The page evaluates the logic from the dumped inputs and compares the
+    result with the dump (`next: 1 ✓ as in the dump`). `unknown` means an
+    input is `x` or is the output of a submodule kept as a block.
+
+  For example, `err_vaddr_reg.q` in the STB loads `vaddr_q[31:0]` when
+  `err_set & ~err_hold` and holds otherwise.
 - **Hide this block** removes the block. The wires through it are connected
   directly, from its sources to its destinations. This is how you simplify
   the diagram, e.g. to fold `paddr_sh` into `paddr_in`.
@@ -226,7 +259,9 @@ step.
   it (where its value comes from) and the blocks up to N levels after it
   (what it drives). The blocks in between that are hidden are bridged, so the
   wires still show the dependencies. The diagram is arranged again. **show
-  all** in the `hidden` menu goes back to the full diagram. For example, focus
+  all** in the `hidden` menu goes back to the full diagram. **← Back** (or
+  Backspace) goes back to the view before the last Focus, with its layout;
+  after several Focus steps it goes back one step at a time. For example, focus
   on `u_stb.err_q` in the LSU page, 2 levels, to see the STB error path.
 - **prev change / next change** jump to the previous / next cycle in which
   the selected signal changes value. With 2535 cycles this is how you find
@@ -350,6 +385,7 @@ cyc=1 lsu_stb_push_ls2=0 v_q=1 iss_q=0
 | `examples/c7blsu/` | `run.sh`, `test109.vcd` (whole CPU) and the generated `c7blsu.html`, `c7blsu_stb.html` |
 | `tests/browser_test.py` | Opens a page in Edge/Chrome, steps, drags, hides, reloads, saves a layout, reports JavaScript errors |
 | `tests/focus_test.py` | Focus on a block, next change, show all, go to a cycle |
+| `tests/logic_test.py` | Evaluates the logic of every block in every cycle and compares it with the dump |
 | `tests/search_test.py` | The value search: find forward/backward, the query parser |
 | `tests/pic_trace.txt` | A small text trace for `pic.v`, to test `--trace` |
 | `tests/screenshot.py` | Screenshot of a page at a given step (`docs/c7blsu_stb.png`) |
