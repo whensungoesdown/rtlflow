@@ -197,7 +197,8 @@ inputs and outputs, what each register will load and from which signals.
 | step buttons `1 2 3` | jump to a step of the current cycle |
 | slider, Home / End | any step, first / last |
 | `Play`, Space | advance every 1.3 s |
-| `−` `Fit` `+` | zoom |
+| `−` `Fit` `+` | zoom. After `Fit` the diagram keeps fitting the width when the window or the side panel changes size, until you zoom with `−` / `+` |
+| divider between the diagram and the side panel | drag to resize the side panel (kept in the browser); double-click for the default width |
 | `lit:` menu | which signals count as active, see below |
 | `hidden (n)` menu | show a hidden block again |
 | `Auto layout` | arrange all blocks again from scratch |

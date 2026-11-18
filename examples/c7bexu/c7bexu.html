@@ -17,8 +17,11 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 #steps span.on { background: #222; color: #fff; border-color: #222; }
 #slider { flex: 1; min-width: 120px; }
 #main { flex: 1; display: flex; min-height: 0; }
-#view { flex: 1; overflow: auto; background: #fff; }
-#side { width: 330px; border-left: 1px solid #ccc; overflow: auto; padding: 10px 14px; font-size: 14px;
+#view { flex: 1; overflow: auto; background: #fff; min-width: 150px; }
+#split { flex: none; width: 6px; cursor: col-resize; background: #e6e6e6; border-left: 1px solid #ccc; }
+#split:hover, #split.drag { background: #9a9aff; }
+body.resizing, body.resizing * { cursor: col-resize !important; user-select: none; }
+#side { width: 330px; flex: none; border-left: 1px solid #ccc; overflow: auto; padding: 10px 14px; font-size: 14px;
         background: #fcfcfc; line-height: 1.45; }
 #side h3 { font-size: 15px; margin: 4px 0 6px; }
 #side .muted { color: #777; }
@@ -72,6 +75,7 @@ table.cond td.val { white-space: nowrap; }
 </div>
 <div id="main">
   <div id="view"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+  <div id="split" title="drag to resize the side panel; double-click: default width"></div>
   <div id="side"><div id="err"></div><div id="notes"></div><hr><div id="info"></div><hr>
     <div class="muted" style="font-size:13px">
       Click a block for its details. Drag a block to move it (also to another row);
@@ -519,7 +523,8 @@ function setZoom(z) {
   zoom = Math.max(0.2, Math.min(4, z));
   if (GEO) { svg.setAttribute('width', GEO.width * zoom); svg.setAttribute('height', GEO.height * zoom); }
 }
-function fit() { setZoom((document.getElementById('view').clientWidth - 8) / GEO.width); }
+let fitted = true;                 // the zoom follows the width of the view until you zoom yourself
+function fit() { setZoom((document.getElementById('view').clientWidth - 8) / GEO.width); fitted = true; }
 
 // ------------------------------------------------------------------ cycle state
 let cur = { c: 0, s: 1 }, timer = null, anim = null;
@@ -1144,8 +1149,8 @@ $('ncyc').onclick = () => go((cur.c + 1) * 3);
 $('play').onclick = play;
 $('slider').oninput = e => go(+e.target.value, false);
 $('steps').onclick = e => { const j = e.target.dataset.j; if (j !== undefined) go(cur.c * 3 + +j); };
-$('zin').onclick = () => setZoom(zoom * 1.25);
-$('zout').onclick = () => setZoom(zoom / 1.25);
+$('zin').onclick = () => { setZoom(zoom * 1.25); fitted = false; };
+$('zout').onclick = () => { setZoom(zoom / 1.25); fitted = false; };
 $('zfit').onclick = fit;
 document.onkeydown = e => {
   if (/INPUT|SELECT/.test(document.activeElement.tagName) && e.target.type !== 'range') return;
@@ -1155,6 +1160,33 @@ document.onkeydown = e => {
               Home: () => go(0), End: () => go(NSTEP - 1), ' ': play, Backspace: back }[e.key];
   if (k) { e.preventDefault(); k(); }
 };
+
+// ------------------------------------------------------------------ resizable side panel
+(function () {
+  const sp = $('split'), side = $('side'), DEF_W = 330;
+  const setW = w => {
+    w = Math.max(200, Math.min(window.innerWidth - 200, Math.round(w)));
+    side.style.width = w + 'px';
+    return w;
+  };
+  try { const w = +localStorage.getItem('rtlflow:side'); if (w) setW(w); } catch (e) { /* */ }
+  let st = null;
+  sp.addEventListener('pointerdown', e => {
+    st = { x: e.clientX, w: side.getBoundingClientRect().width };
+    sp.setPointerCapture(e.pointerId); sp.classList.add('drag'); document.body.classList.add('resizing');
+    e.preventDefault();
+  });
+  sp.addEventListener('pointermove', e => { if (st) { setW(st.w - (e.clientX - st.x)); if (fitted) fit(); } });
+  const end = () => {
+    if (!st) return;
+    st = null; sp.classList.remove('drag'); document.body.classList.remove('resizing');
+    try { localStorage.setItem('rtlflow:side', parseInt(side.style.width, 10)); } catch (e) { /* */ }
+  };
+  sp.addEventListener('pointerup', end);
+  sp.addEventListener('pointercancel', end);
+  sp.addEventListener('dblclick', () => { setW(DEF_W); if (fitted) fit(); try { localStorage.removeItem('rtlflow:side'); } catch (e) { /* */ } });
+  window.addEventListener('resize', () => { if (fitted && GEO) fit(); });
+})();
 
 // ------------------------------------------------------------------ start
 $('title').textContent = D.title;
