@@ -122,7 +122,9 @@ Things to get right:
 - **Submodules.** All files of the module's hierarchy are needed. A
   submodule you don't want to see inside the diagram can be one block:
   `--lib c7btlb.v` reads the DTLB for its ports only, so `u_dtlb` is one
-  block (blue) between its inputs and its outputs. `--blackbox MODULE` does
+  block between its inputs and its outputs, drawn as a chip: a blue body
+  with pins on its sides and a title band with a chip icon and the module
+  name. It stays blue when idle, so it stands out from the signals. `--blackbox MODULE` does
   the same for a module whose file is read normally.
 - **What is shown of the flattened submodules.** Inside `c7blsu`, the STB
   (`u_stb`) is flattened: its register outputs are blocks (`u_stb.v_q`,

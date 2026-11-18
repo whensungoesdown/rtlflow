@@ -93,11 +93,12 @@ window.onerror = (m, s, l) => { document.getElementById('err').textContent += 'e
 
 // ------------------------------------------------------------------ style
 const LABEL_W = 130, MARGIN = 24, GAP = 52, PAD = 8, GSEP = 8, LANE = 10, PADB = 14, MINB = 34, MAXW = 2200;
-const HGT = { input: 44, comb: 44, output: 44, reg: 72, inst: 50 };
+const HGT = { input: 44, comb: 44, output: 44, reg: 72, inst: 58 };
 const BANDS = { Inputs: '#fff6dd', Registers: '#e9f1fb', Logic: '#e1f6ea', Outputs: '#eee6f8' };
 const BAND_OF = { input: 'Inputs', reg: 'Registers', comb: 'Logic', inst: 'Logic', output: 'Outputs' };
 const COL = { input: ['#ffe6cc', '#d79b00'], reg: ['#f8cecc', '#b85450'], comb: ['#d5e8d4', '#82b366'],
               output: ['#e1d5e7', '#9673a6'], inst: ['#dae8fc', '#6c8ebf'] };
+const INST_IDLE = ['#f1f5fb', '#9fb3d1'];   // a submodule stays blue when idle, signals turn grey
 const IDLE = ['#f5f5f5', '#b3b3b3'], FLOW = '#9a9aff', BACK = '#3cb4a4', WIRE = '#b5b5b5', CLKC = '#ff9900';
 const INK = '#222', OFF = '#9a9a9a';
 const F_LBL = '14px Arial', F_VAL = '12px Consolas, monospace';
@@ -138,10 +139,12 @@ const cv = document.createElement('canvas').getContext('2d');
 function tw(s, f) { cv.font = f; return cv.measureText(s).width; }
 const NW = {};
 D.nodes.forEach(n => {
-  let len = n.kind === 'inst' ? n.module.length : fmt('0'.repeat(Math.ceil(n.width / 4)), n.width).length;
+  let len = n.kind === 'inst' ? 0 : fmt('0'.repeat(Math.ceil(n.width / 4)), n.width).length;
   (D.values[n.id] || []).forEach(h => { len = Math.max(len, fmt(h, n.width).length); });
   const w = Math.max(tw(n.id, F_LBL), len * tw('0', F_VAL));
-  NW[n.id] = Math.round(Math.min(260, Math.max(80, w + 26 + (n.kind === 'reg' && n.ff ? 2 * tw(ffTags(n), 'bold 10px Arial') : 0))));
+  NW[n.id] = n.kind === 'inst'
+    ? Math.round(Math.min(300, Math.max(110, tw(n.id, 'bold ' + F_LBL) + 30, tw(n.module, 'bold 12px Arial') + 48)))
+    : Math.round(Math.min(260, Math.max(80, w + 26 + (n.kind === 'reg' && n.ff ? 2 * tw(ffTags(n), 'bold 10px Arial') : 0))));
 });
 
 // ------------------------------------------------------------------ graph
@@ -505,9 +508,21 @@ function render() {
       u.v = T(b.x + ox, b.y0 + 55.5, '', 'bold 12px Consolas, monospace');
       el('polygon', { points: `${x0},${b.y1 - 16} ${x0 + 9},${b.y1 - 10} ${x0},${b.y1 - 4}`, fill: '#fff', stroke: COL.reg[1] }, g);
     } else if (n.kind === 'inst') {
-      el('rect', { x: x0 + 4, y: b.y0 + 4, width: b.w - 8, height: b.h - 8, fill: 'none', stroke: COL.inst[1], 'stroke-width': 0.8 }, g);
-      u.lbl = T(b.x + ox, b.y0 + 19, n.id, 'bold ' + F_LBL);
-      u.v = T(b.x + ox, b.y0 + 35, n.module, 'italic 12px Arial');
+      // a chip: rounded body, pins on the left and right side, a title band with
+      // a chip icon and the module name, the instance name below
+      u.box.setAttribute('rx', 6);
+      u.pins = [];
+      const np = Math.max(2, Math.floor((b.h - 16) / 9));
+      for (let i = 0; i < np; i++) {
+        const py = b.y0 + 10 + i * (b.h - 20) / (np - 1) - 1.5;
+        u.pins.push(el('rect', { x: x0 - 6, y: py, width: 6, height: 3 }, g), el('rect', { x: x0 + b.w, y: py, width: 6, height: 3 }, g));
+      }
+      g.appendChild(u.box);                                   // the body above the pins
+      u.band = el('path', { d: `M${x0},${b.y0 + 22} V${b.y0 + 6} a6,6 0 0 1 6,-6 H${x0 + b.w - 6} a6,6 0 0 1 6,6 V${b.y0 + 22} Z` }, g);
+      u.icon = chipIcon(g, x0 + 15, b.y0 + 11);
+      u.v = T(x0 + 27, b.y0 + 11.5, n.module, 'bold 12px Arial', { 'text-anchor': 'start', fill: '#fff' });
+      u.lbl = T(b.x + ox, b.y0 + 40, n.id, 'bold ' + F_LBL);
+      u.box.setAttribute('stroke-width', 2);
     } else {
       u.lbl = T(b.x + ox, b.y0 + 15, n.id, F_LBL);
       u.v = T(b.x + ox, b.y0 + 32, '', F_VAL);
@@ -519,6 +534,16 @@ function render() {
   }
 }
 
+
+// a chip icon: a square body with three legs on each side
+function chipIcon(g, cx, cy) {
+  let d = `M${cx - 4.5},${cy - 4.5} h9 v9 h-9 Z`;
+  for (const t of [-3, 0, 3]) d += ` M${cx - 4.5},${cy + t} h-2.5 M${cx + 4.5},${cy + t} h2.5 M${cx + t},${cy - 4.5} v-2.5 M${cx + t},${cy + 4.5} v2.5`;
+  return el('path', { d, fill: 'none', 'stroke-width': 1.3, 'stroke-linecap': 'round' }, g);
+}
+const CHIP_SVG = '<svg width="16" height="16" viewBox="-8 -8 16 16" style="vertical-align:-2px"><path d="M-4.5,-4.5 h9 v9 h-9 Z' +
+  [-3, 0, 3].map(t => ` M-4.5,${t} h-2.5 M4.5,${t} h2.5 M${t},-4.5 v-2.5 M${t},4.5 v2.5`).join('') +
+  '" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.4" stroke-linecap="round"/></svg>';
 function setZoom(z) {
   zoom = Math.max(0.2, Math.min(4, z));
   if (GEO) { svg.setAttribute('width', GEO.width * zoom); svg.setAttribute('height', GEO.height * zoom); }
@@ -545,12 +570,19 @@ function update(animate) {
       u.dstrip.setAttribute('fill', dn ? '#ffe6cc' : '#fff');
       u.dl.setAttribute('fill', dn ? '#d79b00' : '#c98a8a');
       u.dv.textContent = dn ? fmt(val(id, c + 1), n.width) : '';
+    } else if (n.kind === 'inst') {
+      const lit = on && s > 0, [f, st] = lit ? COL.inst : INST_IDLE;
+      u.box.setAttribute('fill', f); u.box.setAttribute('stroke', st);
+      u.band.setAttribute('fill', st);
+      u.pins.forEach(r => r.setAttribute('fill', st));
+      u.icon.setAttribute('stroke', '#fff');
+      u.lbl.setAttribute('fill', lit ? INK : '#5a6f8f');
     } else {
       const lit = on && s > 0;
       const [f, st] = lit ? COL[n.kind] : IDLE;
       u.box.setAttribute('fill', f); u.box.setAttribute('stroke', st);
       u.lbl.setAttribute('fill', lit ? INK : OFF);
-      u.v.textContent = n.kind === 'inst' ? n.module : fmt(h, n.width); u.v.setAttribute('fill', lit ? INK : OFF);
+      u.v.textContent = fmt(h, n.width); u.v.setAttribute('fill', lit ? INK : OFF);
     }
     u.selr.setAttribute('display', sel === id ? '' : 'none');
     u.tip.textContent = n.kind === 'inst' ? `${id}: instance of ${n.module}` : `${id}  [${n.kind}, ${n.width} bit${n.width > 1 ? 's' : ''}]\n${full(h, n.width)}`;
@@ -629,7 +661,7 @@ function info() {
   if (!sel || !NODE[sel]) { el.innerHTML = '<span class="muted">No block selected.</span>'; return; }
   const n = NODE[sel], c = cur.c;
   const lk = ids => ids.length ? ids.map(f => `<a data-id="${f}">${f}</a>`).join(', ') : '<span class="muted">-</span>';
-  let h = `<h3>${n.id}</h3><span class="muted">${n.kind === 'inst' ? 'instance of ' + n.module : n.kind + ', ' + n.width + ' bit' + (n.width > 1 ? 's' : '')}${n.src ? '<br>' + n.src.split('|')[0].replace(/^.*[\\/]/, '') : ''}</span>`;
+  let h = `<h3>${n.kind === 'inst' ? CHIP_SVG + ' ' : ''}${n.id}</h3><span class="muted">${n.kind === 'inst' ? 'submodule, instance of <b>' + n.module + '</b>' : n.kind + ', ' + n.width + ' bit' + (n.width > 1 ? 's' : '')}${n.src ? '<br>' + n.src.split('|')[0].replace(/^.*[\\/]/, '') : ''}</span>`;
   if (n.kind !== 'inst') h += `<p>value: <span class="mono">${full(val(sel, c), n.width)}</span>`;
   else h += '<p>';
   if (n.kind === 'reg' && c + 1 < NC) h += `<br>next: <span class="mono">${full(val(sel, c + 1), n.width)}</span>`;
