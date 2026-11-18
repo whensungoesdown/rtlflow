@@ -611,6 +611,11 @@ function info() {
   if (n.kind === 'reg' && c + 1 < NC) h += `<br>next: <span class="mono">${full(val(sel, c + 1), n.width)}</span>`;
   h += `</p><p>from: ${lk(G.fin[sel] || [])}<br>to: ${lk(G.fout[sel] || [])}</p>`;
   if (n.kind !== 'inst' && NC) h += `<p><button id="pchg">&lsaquo; prev change</button> <button id="nchg">next change &rsaquo;</button></p>`;
+  if (n.kind !== 'inst' && NC) h += `<p class="find">find value: <input id="vq" class="mono" size="18"
+    placeholder="${n.width <= 8 ? 'binary, e.g. 01?1' : 'hex, e.g. 7000????'}"
+    title="plain digits: ${n.width <= 8 ? 'binary' : 'hex'}, as shown; 0x.. hex, 0b.. binary, 0d.. decimal, 32'h.. 4'b..; ? = any digit; x matches x">
+    <br><button id="vprev">&lsaquo; find</button> <button id="vnext">find &rsaquo;</button>
+    <span id="vres" class="muted">${VQ.msg || ''}</span></p>`;
   h += `<p><button id="hidebtn">Hide this block</button></p>`;
   h += `<p><button id="focbtn">Focus</button> on this block, <select id="focn">${[1, 2, 3, 4, 6].map(k =>
     `<option${k === FOCUS_N ? ' selected' : ''}>${k}</option>`).join('')}</select> levels up and down</p>`;
@@ -624,10 +629,78 @@ function info() {
     document.getElementById('nchg').onclick = () => chg(1);
     document.getElementById('pchg').onclick = () => chg(-1);
   }
+  const vq = document.getElementById('vq');
+  if (vq) {
+    vq.value = VQ.text;
+    vq.oninput = () => { VQ.text = vq.value; VQ.msg = ''; document.getElementById('vres').textContent = ''; };
+    vq.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); findValue(e.shiftKey ? -1 : 1); } };
+    document.getElementById('vnext').onclick = () => findValue(1);
+    document.getElementById('vprev').onclick = () => findValue(-1);
+    if (VQ.focus) { vq.focus(); vq.setSelectionRange(vq.value.length, vq.value.length); VQ.focus = false; }
+  }
+}
+
+// ------------------------------------------------------------------ value search
+const VQ = { text: '', msg: '', focus: false };
+function bitsOf(h, w) {               // hex value -> bit string, MSB first, w bits
+  let b = '';
+  for (const ch of h) b += /[xz]/.test(ch) ? ch.repeat(4) : parseInt(ch, 16).toString(2).padStart(4, '0');
+  return b.slice(-w).padStart(w, '0');
+}
+function parseQuery(q, w) {
+  // plain digits in the radix the block shows (binary up to 8 bits, else hex);
+  // 0x.. hex, 0b.. binary, 0d.. decimal, or Verilog 32'h.., 4'b.., 'd..
+  // -> RegExp over the w-bit string, or an error message
+  q = q.trim().toLowerCase().replace(/[_\s]/g, '');
+  if (!q) return 'type a value';
+  let base = w <= 8 ? 'b' : 'h', m;
+  if ((m = /^\d*'([bhd])(.*)$/.exec(q))) { base = m[1]; q = m[2]; }
+  else if ((m = /^0([xbd])(.*)$/.exec(q))) { base = m[1] === 'x' ? 'h' : m[1]; q = m[2]; }
+  let bits = '';
+  if (base === 'd') {
+    if (!/^\d+$/.test(q)) return 'not a decimal number';
+    bits = BigInt(q).toString(2);
+  } else if (base === 'b') {
+    if (!/^[01xz?]+$/.test(q)) return 'not a binary value' + (w <= 8 ? ' (use 0x.. for hex)' : '');
+    bits = q;
+  } else {
+    if (!/^[0-9a-fxz?]+$/.test(q)) return 'not a value: hex, 0b.., 0d.., 4\'b..';
+    for (const ch of q) bits += /[xz?]/.test(ch) ? ch.repeat(4) : parseInt(ch, 16).toString(2).padStart(4, '0');
+  }
+  if (bits.length > w) {
+    if (/[1xz]/.test(bits.slice(0, bits.length - w))) return 'wider than ' + w + ' bit' + (w > 1 ? 's' : '');
+    bits = bits.slice(bits.length - w);
+  }
+  return new RegExp('^' + bits.padStart(w, '0').replace(/\?/g, '.') + '$');
+}
+function findValue(d) {
+  const n = NODE[sel];
+  const re = parseQuery(VQ.text, n.width);
+  VQ.focus = true;
+  if (typeof re === 'string') { VQ.msg = re; info(); return; }
+  // a hit is where the value appears: the first cycle of each run of matching cycles
+  const hits = [], len = {};
+  let run = -1;
+  for (let k = 0; k < NC; k++) {
+    const h = val(sel, k);
+    if (h != null && re.test(bitsOf(h, n.width))) {
+      if (run < 0) { run = k; hits.push(k); len[k] = 0; }
+      len[run]++;
+    } else run = -1;
+  }
+  if (!hits.length) { VQ.msg = 'no cycle has this value'; info(); return; }
+  const at = hits.filter(x => x <= cur.c).pop();          // the run the current cycle is in, or before it
+  const inRun = at !== undefined && cur.c < at + len[at];
+  let k = d > 0 ? hits.find(x => x > cur.c) : [...hits].reverse().find(x => x < (inRun ? at : cur.c));
+  let wrap = '';
+  if (k === undefined) { k = d > 0 ? hits[0] : hits[hits.length - 1]; wrap = ', wrapped'; }
+  VQ.msg = `cycle ${D.cycles[k].label}: ${hits.indexOf(k) + 1} of ${hits.length}` +
+    (len[k] > 1 ? `, held ${len[k]} cycles` : '') + wrap;
+  go(k * 3 + (n.kind === 'reg' ? 0 : 1), false);
 }
 document.getElementById('side').addEventListener('click', e => {
   const id = e.target.dataset && e.target.dataset.id;
-  if (id) { sel = id; update(false); }
+  if (id) { if (id !== sel) VQ.msg = ''; sel = id; update(false); }
 });
 
 // ------------------------------------------------------------------ editing
@@ -647,7 +720,7 @@ function dragable(g, id) {
   g.addEventListener('pointerup', () => {
     if (!st) return;
     const s = st; st = null;
-    if (!s.moved) { sel = sel === id ? null : id; update(false); return; }
+    if (!s.moved) { VQ.msg = ''; sel = sel === id ? null : id; update(false); return; }
     const b = GEO.box[id], cy = b.y + s.dy;
     let row = 0, best = Infinity;
     for (let r = 0; r < GEO.R; r++) {

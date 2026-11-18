@@ -1,0 +1,2 @@
+# simulation dumps: regenerate them (see examples/*/sim.sh, run.sh)
+*.vcd

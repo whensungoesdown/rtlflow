@@ -76,17 +76,17 @@ whole CPU works as well: rtlflow looks for the scope (instance) whose
 signals match the module best, and reads only those signals. Use `--scope`
 when the module is instantiated more than once.
 
-`examples/c7blsu_cpu/run.sh` does this with test109 (the STB write error
+`examples/c7blsu/run.sh` does this with test109 (the STB write error
 test) of cpu7b:
 
 ```bash
 # in WSL: simulate the whole CPU, it logs every signal to result.wlf
 cd /mnt/d/work/soc2/rtl/cpu7b/simulation/test109_stb_write_error
 bash simulate.sh
-wlf2vcd result.wlf -o /mnt/d/work/rtlflow/examples/c7blsu_cpu/test109.vcd
+wlf2vcd result.wlf -o /mnt/d/work/rtlflow/examples/c7blsu/test109.vcd
 
 # then
-bash examples/c7blsu_cpu/run.sh
+bash examples/c7blsu/run.sh
 ```
 
 ```
@@ -201,6 +201,25 @@ step.
   the selected signal changes value. With 2535 cycles this is how you find
   the cycles that matter (in test109: `u_stb.err_q` is set at cycle 53).
 - The box after the cycle number jumps to a cycle (type it, Enter).
+- **find value** looks for a value of the selected signal. **find ›** / Enter
+  goes to the next cycle where the value *appears*, and **‹ find** /
+  Shift+Enter to the previous one. A value that is held for several cycles
+  counts once: the search jumps to the first cycle of each run. The message
+  shows e.g. `cycle 53: 2 of 2, held 5 cycles`. The search wraps around at
+  the end of the trace. Registers open at step 1 (clock edge), the other
+  blocks at step 2 (signals).
+
+  | Query | Meaning |
+  |---|---|
+  | `0001`, `01?1` | plain digits are read as shown in the block: binary for 8 bits or fewer, hex otherwise |
+  | `70000000`, `7000_????` | hex (on a signal wider than 8 bits); `_` and spaces are ignored |
+  | `0x1f`, `0b0101`, `0d31` | hex, binary, decimal |
+  | `32'h7000_0000`, `4'b01?1`, `'d31` | Verilog literals |
+  | `?` | any digit (a hex `?` is 4 bits) |
+  | `x`, `z` | match only `x` / `z` bits in the dump |
+
+  A value is padded with zeros on the left to the signal's width, so on
+  `u_stb.v_q` (4 bits), `1` finds `0001`.
 
 Clocks and resets are hidden from the start. Their names match
 `(rst|reset)(_n|_l|n|...)`; add more with `--hide`.
@@ -297,7 +316,8 @@ cyc=1 lsu_stb_push_ls2=0 v_q=1 iss_q=0
 | `rtlflow.py` | Command line: Yosys → signal graph, VCD/trace → values per cycle, writes the page |
 | `viewer.html` | The page template: layout, routing, drawing, playback, editing (plain JavaScript) |
 | `examples/c7blsu_stb/` | `tb_stb_anim.v`, `sim.sh`, `stb.vcd` and the generated `c7blsu_stb.html` |
-| `examples/c7blsu_cpu/` | `run.sh`, `test109.vcd` (whole CPU) and the generated `c7blsu.html`, `c7blsu_stb.html` |
+| `examples/c7blsu/` | `run.sh`, `test109.vcd` (whole CPU) and the generated `c7blsu.html`, `c7blsu_stb.html` |
 | `tests/browser_test.py` | Opens a page in Edge/Chrome, steps, drags, hides, reloads, saves a layout, reports JavaScript errors |
 | `tests/focus_test.py` | Focus on a block, next change, show all, go to a cycle |
+| `tests/search_test.py` | The value search: find forward/backward, the query parser |
 | `tests/pic_trace.txt` | A small text trace for `pic.v`, to test `--trace` |
